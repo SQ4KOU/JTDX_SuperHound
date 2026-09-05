@@ -1,0 +1,2 @@
+CW RF repair source: 271f4fb34b52e507ba77ab5c44028b6e319410bc
+Purpose: trigger verified Release x64 MSI build after restoring PTTMode.CW and removing the added N1MM CW-shift option.
