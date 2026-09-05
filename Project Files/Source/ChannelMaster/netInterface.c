@@ -367,8 +367,6 @@ void SetPttOut(int xmit)
 	{
 		XmitBit = xmit;
 		prn->tx[0].ptt_out = xmit & 0x1;
-		/* SQ4KOU TX -> IN2 OFF: update P1 run bits on every PTT edge. */
-		if (RadioProtocol == USB && listenSock != INVALID_SOCKET) SendRunToMetis();
 		if (listenSock != INVALID_SOCKET && prn->sendHighPriority != 0)
 			CmdHighPriority();
 	}
