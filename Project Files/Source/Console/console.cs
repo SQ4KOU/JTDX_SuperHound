@@ -29208,8 +29208,7 @@ namespace Thetis
                     (RX1DSPMode == DSPMode.CWL || RX1DSPMode == DSPMode.CWU) &&
                      !chkTUN.Checked &&
                      _current_ptt_mode != PTTMode.SPACE &&
-                    _current_ptt_mode != PTTMode.CAT &&
-                    _current_ptt_mode != PTTMode.CW)
+                    _current_ptt_mode != PTTMode.CAT)
                     NetworkIO.SetPttOut(0);
                 else NetworkIO.SetPttOut(1);
                 if (serialPTT != null) serialPTT.setDTR(true);
