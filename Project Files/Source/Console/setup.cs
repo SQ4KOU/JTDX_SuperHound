@@ -1,4 +1,4 @@
-//=================================================================
+﻿//=================================================================
 // setup.cs
 //=================================================================
 // Thetis is a C# implementation of a Software Defined Radio.
@@ -134,7 +134,6 @@ namespace Thetis
             InitializeComponent();
             InitDetCalTab(); // Yurij-eu2av - 2026-07-02: build the Det. Cal. tab programmatically
             InitPhaseRotatorControls(); // Yurij-eu2av - 2026-07-08: build Phase Rotator extras programmatically
-            InitN1mmCWShiftOption(); // Ramdor N1MM CW spectrum shift option
 
             _original_pnlP1_adcs_location = pnlP1_adcs.Location;
 
@@ -38307,41 +38306,6 @@ namespace Thetis
         private void tbTCISpotBackPanel_alpha_Scroll(object sender, EventArgs e)
         {
             Display.TCIBackPanelAlpha = tbTCISpotBackPanel_alpha.Value;
-        }
-
-        private CheckBoxTS chkN1mm_include_cw_shift;
-
-        private void InitN1mmCWShiftOption()
-        {
-            if (chkN1mm_include_cw_shift != null) return;
-
-            chkN1mm_include_cw_shift = new CheckBoxTS();
-            chkN1mm_include_cw_shift.AutoSize = true;
-            chkN1mm_include_cw_shift.Image = null;
-            chkN1mm_include_cw_shift.Location = new System.Drawing.Point(22, 136);
-            chkN1mm_include_cw_shift.Name = "chkN1mm_include_cw_shift";
-            chkN1mm_include_cw_shift.Size = new System.Drawing.Size(104, 17);
-            chkN1mm_include_cw_shift.TabIndex = 76;
-            chkN1mm_include_cw_shift.Text = "Include CW shift";
-            chkN1mm_include_cw_shift.UseVisualStyleBackColor = true;
-            toolTip1.SetToolTip(chkN1mm_include_cw_shift,
-                "Include the CW frequency shift. This is not normally required; enable only if the N1MM spectrum frequency is offset from the signal. (default off)");
-            chkN1mm_include_cw_shift.CheckedChanged += chkN1mm_include_cw_shift_CheckedChanged;
-            groupBoxTS16.Controls.Add(chkN1mm_include_cw_shift);
-
-            // Preserve the EU2AV designer while matching the Ramdor N1MM layout.
-            groupBoxTS16.Size = new System.Drawing.Size(323, 159);
-            panelTS15.Location = new System.Drawing.Point(361, 310);
-            panelTS15.Size = new System.Drawing.Size(26, 77);
-            groupBoxTS69.Location = new System.Drawing.Point(386, 310);
-            groupBoxTS69.Size = new System.Drawing.Size(330, 86);
-
-            N1MM.CWShiftEnable = chkN1mm_include_cw_shift.Checked;
-        }
-
-        private void chkN1mm_include_cw_shift_CheckedChanged(object sender, EventArgs e)
-        {
-            N1MM.CWShiftEnable = chkN1mm_include_cw_shift.Checked;
         }
 
         private void chkWaterfall_smear_CheckedChanged(object sender, EventArgs e)

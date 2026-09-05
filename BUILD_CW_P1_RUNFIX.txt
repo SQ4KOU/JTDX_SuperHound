@@ -1,2 +1,0 @@
-SQ4KOU CW P1 run-state fix build trigger.
-Functional source fix commit: d69bf330dab7990593f2c0175f03d2bb012bbaf7
