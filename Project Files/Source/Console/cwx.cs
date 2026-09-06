@@ -1,4 +1,4 @@
-//=================================================================
+﻿//=================================================================
 // cwx.cs
 //=================================================================
 // CWX - new version of the old keyer memory and keyboard stuff
@@ -279,14 +279,35 @@ namespace Thetis
 
         private void set_cwx_mox_latch(bool state)
         {
-            // SQ4KOU: CWX MOX latch only for HPSDR Protocol 2.
-            if (NetworkIO.CurrentRadioProtocol != RadioProtocol.ETH) return;
+            RadioProtocol protocol = NetworkIO.CurrentRadioProtocol;
+            bool p1 = protocol == RadioProtocol.USB;
+            bool p2 = protocol == RadioProtocol.ETH;
+            if (!p1 && !p2) return;
             if (cwx_mox_latched == state) return;
 
             if (state)
+            {
                 console.CurrentPTTMode = PTTMode.SPACE;
 
-            console.MOX = state;
+                // P1: disable firmware-keyer packing and configure normal IQ first.
+                if (p1 && !console.SQ4KOUStartP1SoftwareCWX()) return;
+
+                console.MOX = true;
+
+                // In CW mode normal MOX does not start the WDSP TX channel.
+                if (p1) console.SQ4KOUArmP1SoftwareCWXTX();
+            }
+            else
+            {
+                if (p1) console.SQ4KOUSetP1SoftwareCWXKey(false);
+
+                // Keep software-CW mode active through the MOX->RX transition so
+                // the native CW frequency/key-up handling sees the correct state.
+                console.MOX = false;
+
+                if (p1) console.SQ4KOUStopP1SoftwareCWX();
+            }
+
             cwx_mox_latched = state;
         }
 
@@ -306,6 +327,8 @@ namespace Thetis
 
                 if (state)
                     set_cwx_mox_latch(true);
+                else if (NetworkIO.CurrentRadioProtocol == RadioProtocol.USB)
+                    set_cwx_mox_latch(false);
 
                 setptt_memory = state;
             }
@@ -317,7 +340,10 @@ namespace Thetis
         {
             if (setkey_memory != state)
             {
-                NetworkIO.SetCWX(Convert.ToInt32(state));
+                if (NetworkIO.CurrentRadioProtocol == RadioProtocol.USB && console.SQ4KOUP1SoftwareCWXActive)
+                    console.SQ4KOUSetP1SoftwareCWXKey(state);
+                else
+                    NetworkIO.SetCWX(Convert.ToInt32(state));
 
                 if (state) keyLed.BackColor = System.Drawing.Color.Yellow;
                 else keyLed.BackColor = System.Drawing.Color.Black;
@@ -330,7 +356,8 @@ namespace Thetis
             clear_fifo();
             clear_fifo2();
             setkey(false); //[2.10.3]MW0LGE swap
-            setptt(false);
+            setptt(false);
+
             set_cwx_mox_latch(false);
             ttx = 0; pause = 0; newptt = 0;
             keying = false;
