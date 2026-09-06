@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $BundleDir = (Resolve-Path $BundleDir).Path
 $OutputMsi = [IO.Path]::GetFullPath($OutputMsi)
 $work = Join-Path $env:RUNNER_TEMP 'jtdx-superhound-msi'
+Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $work | Out-Null
 New-Item -ItemType Directory -Force ([IO.Path]::GetDirectoryName($OutputMsi)) | Out-Null
 
@@ -16,18 +17,13 @@ if (-not (Test-Path (Join-Path $BundleDir 'sfrx.exe'))) { throw "sfrx.exe missin
 function Find-Wix3Bin {
     $cmd = Get-Command heat.exe -ErrorAction SilentlyContinue
     if ($cmd) { return Split-Path $cmd.Source }
-    $roots = @(
-        'C:\Program Files (x86)',
-        'C:\Program Files'
-    )
+    $roots = @('C:\Program Files (x86)', 'C:\Program Files')
     foreach ($root in $roots) {
         if (-not (Test-Path $root)) { continue }
         $dirs = Get-ChildItem $root -Directory -Filter 'WiX Toolset v3*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending
         foreach ($d in $dirs) {
             $bin = Join-Path $d.FullName 'bin'
-            if ((Test-Path (Join-Path $bin 'heat.exe')) -and (Test-Path (Join-Path $bin 'candle.exe')) -and (Test-Path (Join-Path $bin 'light.exe'))) {
-                return $bin
-            }
+            if ((Test-Path (Join-Path $bin 'heat.exe')) -and (Test-Path (Join-Path $bin 'candle.exe')) -and (Test-Path (Join-Path $bin 'light.exe'))) { return $bin }
         }
     }
     return $null
@@ -55,12 +51,12 @@ if ($LASTEXITCODE -ne 0) { throw "heat.exe failed: $LASTEXITCODE" }
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*" Name="JTDX SuperHound P1 SQ4KOU" Language="1033" Version="0.1.0.0" Manufacturer="SQ4KOU" UpgradeCode="4F578792-54D5-47F2-B2F8-BB6B1175B649">
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Description="JTDX SuperHound P1 test build by SQ4KOU" />
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" Description="JTDX SuperHound P1 test build by SQ4KOU" />
     <MajorUpgrade DowngradeErrorMessage="A newer JTDX SuperHound P1 build is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="ProgramFilesFolder">
+      <Directory Id="ProgramFiles64Folder">
         <Directory Id="ManufacturerFolder" Name="SQ4KOU">
           <Directory Id="INSTALLFOLDER" Name="JTDX SuperHound P1" />
         </Directory>
@@ -71,7 +67,7 @@ if ($LASTEXITCODE -ne 0) { throw "heat.exe failed: $LASTEXITCODE" }
     </Directory>
 
     <DirectoryRef Id="INSTALLFOLDER">
-      <Component Id="AppIntegration" Guid="DDBA4FF2-17F7-48C5-894E-4C83F4AB3EAA">
+      <Component Id="AppIntegration" Guid="DDBA4FF2-17F7-48C5-894E-4C83F4AB3EAA" Win64="yes">
         <Environment Id="JtdxSfrxPath" Name="JTDX_SFRX" Value="[INSTALLFOLDER]sfrx.exe" Action="set" Part="all" System="yes" Permanent="no" />
         <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuDir" Name="JTDX SuperHound P1" WorkingDirectory="INSTALLFOLDER" Target="[INSTALLFOLDER]jtdx.exe" />
         <RemoveFolder Id="RemoveProgramMenuDir" Directory="ProgramMenuDir" On="uninstall" />
@@ -89,16 +85,16 @@ if ($LASTEXITCODE -ne 0) { throw "heat.exe failed: $LASTEXITCODE" }
 
 Push-Location $work
 try {
-    & $candle -nologo -arch x86 -dSourceDir="$BundleDir" $productWxs $filesWxs
+    & $candle -nologo -arch x64 -dSourceDir="$BundleDir" $productWxs $filesWxs
     if ($LASTEXITCODE -ne 0) { throw "candle.exe failed: $LASTEXITCODE" }
     & $light -nologo -out $OutputMsi (Join-Path $work 'Product.wixobj') (Join-Path $work 'Files.wixobj')
     if ($LASTEXITCODE -ne 0) { throw "light.exe failed: $LASTEXITCODE" }
 }
-finally {
-    Pop-Location
-}
+finally { Pop-Location }
 
 $msi = Get-Item $OutputMsi
 if ($msi.Length -lt 100000) { throw "MSI is unexpectedly small: $($msi.Length) bytes" }
-Get-FileHash $OutputMsi -Algorithm SHA256 | Format-List | Out-String | Set-Content ($OutputMsi + '.sha256.txt')
+$hash = Get-FileHash $OutputMsi -Algorithm SHA256
+"SHA256  $($hash.Hash)  $($msi.Name)" | Set-Content ($OutputMsi + '.sha256.txt')
 Write-Host "MSI READY: $OutputMsi ($($msi.Length) bytes)"
+Write-Host "SHA256: $($hash.Hash)"
