@@ -77,6 +77,25 @@ def main() -> int:
     )
     factory.write_text(f, encoding="utf-8", newline="")
 
+    # Current gfortran reserves SPLIT as an intrinsic. JTDX has a legacy local
+    # helper with the same name in fixed-form Fortran; rename only that helper
+    # and its local call sites, preserving its behaviour.
+    jpl = src / "lib" / "jplsubs.f"
+    j = jpl.read_text(encoding="utf-8", errors="strict")
+    j, decl_count = re.subn(
+        r"(?m)^(\s*)SUBROUTINE SPLIT\(TT,FR\)\s*$",
+        r"\1SUBROUTINE LSPLIT(TT,FR)",
+        j,
+        count=1,
+    )
+    if decl_count != 1:
+        raise RuntimeError(f"rename JPL SPLIT declaration: expected one patch point, found {decl_count}")
+    call_count = j.count("CALL SPLIT(")
+    if call_count != 3:
+        raise RuntimeError(f"rename JPL SPLIT calls: expected 3 patch points, found {call_count}")
+    j = j.replace("CALL SPLIT(", "CALL LSPLIT(")
+    jpl.write_text(j, encoding="utf-8", newline="")
+
     # Fail closed if a build-time OmniRig hook survived.
     checks = {
         "CMake OmniRig source": "OmniRigTransceiver.cpp" in c,
@@ -85,12 +104,15 @@ def main() -> int:
         "CMake ActiveQt link": "Qt5::AxContainer" in c or "Qt5::AxBase" in c,
         "Factory OmniRig include": "#include \"OmniRigTransceiver.hpp\"" in f,
         "Factory OmniRig registration": "OmniRigTransceiver::register_transceivers" in f,
+        "JPL legacy SPLIT declaration": "SUBROUTINE SPLIT(TT,FR)" in j,
+        "JPL legacy SPLIT call": "CALL SPLIT(" in j,
     }
     bad = [name for name, present in checks.items() if present]
     if bad:
-        raise RuntimeError("OmniRig disable incomplete: " + ", ".join(bad))
+        raise RuntimeError("CI compatibility patch incomplete: " + ", ".join(bad))
 
     print("OMNIRIG_CI_DISABLE PASS")
+    print("JPL_SPLIT_GFORTRAN_COMPAT PASS")
     return 0
 
 
