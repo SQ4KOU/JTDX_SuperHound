@@ -151,7 +151,6 @@ namespace Thetis
         private static bool _ignore_written;
         private static string _unique_instance_id;
         private static bool _prune_backups;
-        private static bool _migration_failed_keep_original;
         static DBMan()
         {
             _ignore_written = false;
@@ -160,7 +159,6 @@ namespace Thetis
             _db_data_path = "";
             _unique_instance_id = "";
             _prune_backups = false;
-            _migration_failed_keep_original = false;
             _frm_dbman = new frmDBMan();
         }
         public static bool IsVisible
@@ -231,7 +229,6 @@ namespace Thetis
         public static bool LoadDB(string[] args, out string broken_folder)
         {
             _dbman_settings = null;
-            _migration_failed_keep_original = false;
             broken_folder = "";
 
             if (!Common.IsValidPath(_db_data_path))
@@ -391,14 +388,8 @@ namespace Thetis
                         ok = DB.Init();
                         _ignore_written = false;
 
-                        //check version / schema compatibility
-                        // Yurij-eu2av - 2026-07-09: detect old/incomplete DB schema and ask user
-                        // for consent before running the upgrade+merge process.
-                        if (ok)
-                        {
-                            bool schema_mismatch = !DB.IsDatabaseCompatible(out string mismatch_reason);
-                            ok = checkVersion(made_new, ctrl_key_force_update, updateFile, schema_mismatch, mismatch_reason);
-                        }
+                        //check version
+                        if(ok) checkVersion(made_new, ctrl_key_force_update, updateFile);
 
                         if(ok) // note, the TakeBackup above will not prune, as the DB has not been recovered for the flag PruneBackups
                         {
@@ -425,7 +416,7 @@ namespace Thetis
             if (!ok)
             {
                 // try to move to broken folder
-                if (!_migration_failed_keep_original && _dbman_settings != null)
+                if (_dbman_settings != null)
                 {
                     broken_folder = _dbman_settings.ActiveDB_GUID.ToString();
                     moveToBroken(_dbman_settings.ActiveDB_GUID);
@@ -469,11 +460,8 @@ namespace Thetis
             catch { return false; }
         }
 
-        // Yurij-eu2av - 2026-07-09: added schema-mismatch detection, Yes/No consent dialog,
-        // and pre-upgrade backup before the DB merge process.
-        private static bool checkVersion(bool made_new, bool force_upgrade = false, bool force_upgrade_via_file = false, bool schema_mismatch = false, string schema_mismatch_reason = "")
+        private static void checkVersion(bool made_new, bool force_upgrade = false, bool force_upgrade_via_file = false)
         {
-            _migration_failed_keep_original = false;
             string version;
             Dictionary<string, string> vals = DB.GetVarsDictionary("State");
             if (vals.ContainsKey("VersionNumber"))
@@ -481,168 +469,55 @@ namespace Thetis
             else
                 version = "? version";
 
-            if (made_new) return true;
-            bool schemaUpgradeRequired = DB.LoadedDatabaseSchemaVersion < DB.CurrentDatabaseSchemaVersion;
-            if (!force_upgrade && !force_upgrade_via_file && !schemaUpgradeRequired && !schema_mismatch && Common.GetVerNum() == version) return true;
+            if (made_new) return;
+            if (!force_upgrade && Common.GetVerNum() == version) return; // same version, dont need to do anything
 
-            string force_info = force_upgrade ? "Force database update requested.\n\n" : (force_upgrade_via_file ? "Database update requested by updatedb.txt.\n\n" : (schema_mismatch ? "Database schema/data compatibility check requires an update.\n" + schema_mismatch_reason + "\n\n" : ""));
+            string force_info = force_upgrade ? "Force database update requested.\n\n" : "";
+            
             DialogResult dr = MessageBox.Show(force_info + "This version [" + Common.GetVerNum() + "] of Thetis requires your database [" + version + "] to be updated.\n\n" +
-                "A new updated database will be created as a candidate, validated, and only then made active.",
+                "A new updated database will be created, and your old database merged into it. It will be made active.",
                 "Database Manager",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information, MessageBoxDefaultButton.Button1, Common.MB_TOPMOST);
 
             Guid guid_original = _dbman_settings == null ? Guid.Empty : _dbman_settings.ActiveDB_GUID;
-            string original_db_filename_xml = DB.FileName;
-            Dictionary<Guid, DatabaseInfo> before = getAvailableDBs();
-            Guid candidateGuid = Guid.Empty;
-            string candidateFile = "";
-            bool ok = false;
 
-            DB.LogDatabaseEvent("MIGRATE_BEGIN", "Original=" + guid_original + ", version=" + version + ", schema=" + DB.LoadedDatabaseSchemaVersion);
-            DB.SetCheckpointingEnabled(false);
-            try
-            {
-                ok = createNewDB(false, false, out bool _);
-                if (ok)
+            // need to create new fresh db
+            string orginal_db_filename_xml = DB.FileName;
+            bool ok = createNewDB(false, true, out bool _);
+
+            if (ok) {
+                // then import the one we were using into that new fresh one we just created
+                // we need to ignore merged flag so that we can contine to use and save everyting to this database
+                ok = DB.ImportAndMergeDatabase(orginal_db_filename_xml, out string log, true);
+                try
                 {
-                    Dictionary<Guid, DatabaseInfo> after = getAvailableDBs();
-                    foreach (Guid g in after.Keys)
-                    {
-                        if (!before.ContainsKey(g))
-                        {
-                            if (candidateGuid != Guid.Empty)
-                            {
-                                ok = false;
-                                DB.LogDatabaseEvent("MIGRATE_FAIL", "More than one candidate database detected.");
-                                break;
-                            }
-                            candidateGuid = g;
-                        }
-                    }
-                    if (candidateGuid == Guid.Empty)
-                    {
-                        ok = false;
-                        DB.LogDatabaseEvent("MIGRATE_FAIL", "Candidate database GUID was not detected.");
-                    }
+                    File.WriteAllText(_app_data_path + "ImportLog_dbupdate.txt", log);
                 }
-
-                if (ok)
-                {
-                    candidateFile = _db_data_path + candidateGuid.ToString() + "\\database.xml";
-                    DB.LogDatabaseEvent("MIGRATE_CANDIDATE", candidateGuid + " | " + candidateFile);
-                    _ignore_written = true;
-                    DB.FileName = candidateFile;
-                    ok = DB.Init();
-                    _ignore_written = false;
-                    DB.SetCheckpointingEnabled(false);
-                }
-
-                string mergeLog = "";
-                if (ok)
-                {
-                    ok = DB.ImportAndMergeDatabase(original_db_filename_xml, out mergeLog, true);
-                    try { File.WriteAllText(_app_data_path + "ImportLog_dbupdate.txt", mergeLog); }
-                    catch (Exception ex) { DB.LogDatabaseEvent("MIGRATE_LOG_WARN", "Could not write ImportLog_dbupdate.txt", ex); }
-                }
-
-                if (ok)
-                {
-                    ok = DB.ValidateCurrentDatabase(out string validationProblems);
-                    if (!ok) DB.LogDatabaseEvent("MIGRATE_VALIDATE_FAIL", validationProblems);
-                    else DB.LogDatabaseEvent("MIGRATE_VALIDATE", "In-memory candidate OK.");
-                }
-
-                if (ok)
-                {
-                    _ignore_written = true;
-                    ok = DB.WriteDB(candidateFile);
-                    _ignore_written = false;
-                }
-
-                if (ok)
-                {
-                    ok = DB.ValidateDatabaseFile(candidateFile, true, out string persistedProblems);
-                    if (!ok) DB.LogDatabaseEvent("MIGRATE_VERIFY_FAIL", persistedProblems);
-                    else DB.LogDatabaseEvent("MIGRATE_VERIFY", "Persisted candidate OK.");
-                }
-
-                if (ok)
-                {
-                    ok = makeDBActive(candidateGuid);
-                    if (ok)
-                    {
-                        _dbman_settings = getActiveDB();
-                        DB.LogDatabaseEvent("MIGRATE_ACTIVATE", candidateGuid.ToString());
-                    }
-                }
-
-                if (ok)
-                {
-                    try { DBWritten(); }
-                    catch (Exception ex) { DB.LogDatabaseEvent("MIGRATE_METADATA_WARN", "DBWritten metadata update failed.", ex); }
-                    if (force_upgrade_via_file) renameUpdatedb();
-                    _migration_failed_keep_original = false;
-                    dr = MessageBox.Show("The database update was completed successfully.",
-                        "Database Manager",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information, MessageBoxDefaultButton.Button1, Common.MB_TOPMOST);
-                    return true;
-                }
-
-                DB.LogDatabaseEvent("MIGRATE_FAIL", "Candidate rejected; original database remains active.");
-                return false;
+                catch { }
             }
-            catch (Exception ex)
+
+            if (ok)
             {
-                ok = false;
-                DB.LogDatabaseEvent("MIGRATE_EXCEPTION", "Migration aborted.", ex);
-                return false;
+                DBWritten(); // update json to reflect the merged info, like model etc
+
+                // not sure we want to do this
+                //// then delete the orginal
+                //RemoveDB(guid_original, true);
+
+                if(force_upgrade_via_file) renameUpdatedb();
+
+                dr = MessageBox.Show("The database update was completed sucessfully.",
+                    "Database Manager",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information, MessageBoxDefaultButton.Button1, Common.MB_TOPMOST);
             }
-            finally
+            else
             {
-                _ignore_written = false;
-                if (!ok)
-                {
-                    bool rollbackOk = false;
-                    try
-                    {
-                        // Re-activate the original GUID before quarantining the candidate.
-                        // This prevents a partially successful settings-file update from ever
-                        // leaving the rejected candidate selected.
-                        bool activeOk = guid_original != Guid.Empty && makeDBActive(guid_original);
-                        DB.FileName = original_db_filename_xml;
-                        _ignore_written = true;
-                        bool initOk = DB.Init();
-                        _ignore_written = false;
-                        _dbman_settings = getActiveDB();
-                        rollbackOk = activeOk && initOk && _dbman_settings != null && _dbman_settings.ActiveDB_GUID == guid_original;
-                        if (rollbackOk) DB.LogDatabaseEvent("MIGRATE_ROLLBACK_OK", guid_original.ToString());
-                        else DB.LogDatabaseEvent("MIGRATE_ROLLBACK_FAIL", "Original database could not be fully restored.");
-                    }
-                    catch (Exception ex)
-                    {
-                        _ignore_written = false;
-                        DB.LogDatabaseEvent("MIGRATE_ROLLBACK_FAIL", original_db_filename_xml, ex);
-                    }
-
-                    if (candidateGuid != Guid.Empty && candidateGuid != guid_original)
-                    {
-                        try { moveToBroken(candidateGuid); }
-                        catch { }
-                    }
-
-                    // Tell LoadDB not to move the restored original DB into \broken.
-                    _migration_failed_keep_original = rollbackOk;
-
-                    MessageBox.Show(rollbackOk
-                            ? "The database update did not complete. The original database was restored and left active."
-                            : "The database update did not complete and the original database could not be fully restored. See Database.log.",
-                        "Database Manager",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Error, MessageBoxDefaultButton.Button1, Common.MB_TOPMOST);
-                }
-                DB.SetCheckpointingEnabled(true);
+                dr = MessageBox.Show("The database update did not complete.",
+                    "Database Manager",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error, MessageBoxDefaultButton.Button1, Common.MB_TOPMOST);
             }
         }
         private static void moveToBroken(Guid guid)
@@ -711,7 +586,7 @@ namespace Thetis
                 di.TotalContentsSize = calculateFolderSize(folderInfo);
 
                 // update db details
-                FileInfo fi = new FileInfo(DB.FileName);
+                FileInfo fi = new FileInfo(json_file);
                 di.Size = fi.Length;
                 di.LastChanged = fi.LastWriteTime;
 
