@@ -9516,12 +9516,6 @@ namespace Thetis
                     _loaded_from_lastgood = true;
                     Debug.Print("Database.xml could not be read. Loaded database.lastgood.xml instead.");
                 }
-            }
-            else if (TryReadDatabase(lastGood, out DataSet recovered))
-            {
-                ds = recovered;
-                _loaded_from_lastgood = true;
-                Debug.Print("Database.xml is missing. Loaded database.lastgood.xml instead.");
             }                
 
             VerifyTables();
@@ -9587,9 +9581,29 @@ namespace Thetis
             string temp = fn + ".tmp";
             string lastGood = LastGoodFileName(fn);
             bool primaryFile = string.Equals(Path.GetFullPath(fn), Path.GetFullPath(_file_name), StringComparison.OrdinalIgnoreCase);
+            bool existedBeforeWrite = File.Exists(fn);
 
             try
             {
+                // IMPORTANT: fresh database creation keeps the original ramdor path.
+                // DBMan expects database.xml to exist immediately after DB.Init().
+                if (!existedBeforeWrite)
+                {
+                    dsIN.WriteXml(fn, XmlWriteMode.WriteSchema);
+
+                    // Verify the newly created file before accepting it.
+                    DataSet firstWriteVerify = new DataSet("Data");
+                    firstWriteVerify.ReadXml(fn);
+
+                    if (!File.Exists(lastGood))
+                        File.Copy(fn, lastGood, false);
+
+                    if (primaryFile) _loaded_from_lastgood = false;
+                    DBMan.DBWritten();
+                    return true;
+                }
+
+                // Existing database: protected atomic replacement.
                 if (File.Exists(temp)) File.Delete(temp);
 
                 using (FileStream fs = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
@@ -9598,26 +9612,17 @@ namespace Thetis
                     fs.Flush(true);
                 }
 
-                // An unreadable temp XML must never replace the live database.
                 DataSet verify = new DataSet("Data");
                 verify.ReadXml(temp);
 
-                if (File.Exists(fn))
+                if (primaryFile && _loaded_from_lastgood)
                 {
-                    if (primaryFile && _loaded_from_lastgood)
-                    {
-                        // Do not replace the known-good backup with the corrupt live file.
-                        File.Replace(temp, fn, null, true);
-                    }
-                    else
-                    {
-                        File.Replace(temp, fn, lastGood, true);
-                    }
+                    // The live file was corrupt; do not overwrite the known-good backup with it.
+                    File.Replace(temp, fn, null, true);
                 }
                 else
                 {
-                    File.Move(temp, fn);
-                    if (!File.Exists(lastGood)) File.Copy(fn, lastGood, false);
+                    File.Replace(temp, fn, lastGood, true);
                 }
 
                 if (primaryFile) _loaded_from_lastgood = false;
@@ -9626,6 +9631,11 @@ namespace Thetis
             catch (Exception ex)
             {
                 try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+                // If first creation failed, leave no half-created database.xml behind.
+                if (!existedBeforeWrite)
+                {
+                    try { if (File.Exists(fn)) File.Delete(fn); } catch { }
+                }
 
                 MessageBox.Show("A database write to file operation failed.  " +
                     "The exception error was:\n\n" + ex.Message,
