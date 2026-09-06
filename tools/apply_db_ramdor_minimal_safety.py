@@ -107,7 +107,8 @@ if "EnsureSQ4KOUProfileExtensions();" not in text:
         re.MULTILINE,
     )
     def add_extension_call(m):
-        return m.group(1) + source_eol("\n            EnsureSQ4KOUProfileExtensions();\n\n            ") + m.group(2)
+        prefix = m.group(1).rstrip(" \t\r\n")
+        return prefix + source_eol("\n\n            EnsureSQ4KOUProfileExtensions();\n\n            ") + m.group(2)
     text, count = verify_pattern.subn(add_extension_call, text, count=1)
     if count != 1:
         raise RuntimeError(f"VerifyTables TXProfileDef/WriteDB block not found uniquely; matches={count}")
