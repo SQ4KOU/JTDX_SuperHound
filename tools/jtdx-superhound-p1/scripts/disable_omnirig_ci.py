@@ -21,7 +21,7 @@ def main() -> int:
 
     c = cmake.read_text(encoding="utf-8", errors="strict")
 
-    # TCI-focused Windows build: OmniRig is not used.  Current upstream JTDX
+    # TCI-focused Windows build: OmniRig is not used. Current upstream JTDX
     # nevertheless hard-requires a registered OmniRig COM server at CMake time.
     # Remove only that optional CAT backend; Hamlib and TCI remain intact.
     c = sub_once(
@@ -53,6 +53,13 @@ def main() -> int:
         "remove ActiveX wrapper generation",
     )
 
+    c = sub_once(
+        c,
+        r"if \(WIN32\)\r?\n\s*target_link_libraries \(wsjt_qt Qt5::AxContainer Qt5::AxBase\)\r?\nendif \(WIN32\)\r?\n",
+        "# SQ4KOU: OmniRig ActiveQt link dependencies disabled.\n",
+        "remove ActiveQt link dependencies",
+    )
+
     cmake.write_text(c, encoding="utf-8", newline="")
 
     f = factory.read_text(encoding="utf-8", errors="strict")
@@ -75,6 +82,7 @@ def main() -> int:
         "CMake OmniRig source": "OmniRigTransceiver.cpp" in c,
         "CMake dumpcpp": "COMMAND ${DUMPCPP} -getfile" in c,
         "CMake ActiveX wrapper": "wrap_ax_server (GENAXSRCS" in c,
+        "CMake ActiveQt link": "Qt5::AxContainer" in c or "Qt5::AxBase" in c,
         "Factory OmniRig include": "#include \"OmniRigTransceiver.hpp\"" in f,
         "Factory OmniRig registration": "OmniRigTransceiver::register_transceivers" in f,
     }
