@@ -17,6 +17,8 @@ Workflow: `.github/workflows/jtdx-superhound-p1.yml`
 
 Branch: `jtdx-superhound-p1-ci`
 
-The workflow clones current JTDX from SourceForge, applies `scripts/patch_jtdx.py`, builds the official WSJT-X `sfrx` target, then attempts a complete JTDX Windows build under MSYS2/UCRT64.
+The workflow clones current JTDX from SourceForge, applies `scripts/patch_jtdx.py`, builds the JTDX Hamlib fork in CI, builds the official WSJT-X `sfrx` target, then attempts a complete JTDX Windows build under MSYS2/UCRT64.
 
 This branch is isolated from the normal Thetis branches and is used only as a CI/build harness for the JTDX experiment.
+
+Current CI generation: P1-CI-2.
