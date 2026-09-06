@@ -2,11 +2,17 @@ from pathlib import Path
 import re
 
 p = Path(r"Project Files/Source/Console/database.cs")
-text = p.read_text(encoding="utf-8-sig")
+raw = p.read_bytes()
+had_bom = raw.startswith(b"\xef\xbb\xbf")
+text = raw.decode("utf-8-sig")
+# Preserve the source file's existing line-ending convention so this remains a tiny diff.
+eol = "\r\n" if text.count("\r\n") >= max(1, text.count("\n") // 2) else "\n"
+
+def source_eol(s: str) -> str:
+    return s.replace("\r\n", "\n").replace("\n", eol)
 
 # This patch is intentionally small. The database semantics remain ramdor/Thetis.
 # We add only: (1) atomic write with previous good copy, (2) startup fallback.
-
 for forbidden in (
     "IsDatabaseCompatible",
     "CurrentDatabaseSchemaVersion",
@@ -18,14 +24,11 @@ for forbidden in (
     if forbidden in text:
         raise RuntimeError(f"source is not clean ramdor DB handling; forbidden token present: {forbidden}")
 
-# -----------------------------------------------------------------------------
-# Small safety helpers/state.
-# -----------------------------------------------------------------------------
 marker = "        #region Private Member Functions"
 if marker not in text:
     raise RuntimeError("private member marker not found")
 
-helpers = r'''        // SQ4KOU: minimal database corruption protection only.
+helpers = source_eol(r'''        // SQ4KOU: minimal database corruption protection only.
         // Database schema, import, migration and compatibility semantics remain ramdor/Thetis.
         private static bool _loaded_from_lastgood = false;
 
@@ -55,18 +58,16 @@ helpers = r'''        // SQ4KOU: minimal database corruption protection only.
             }
         }
 
-'''
+''')
 text = text.replace(marker, helpers + marker, 1)
 
-# -----------------------------------------------------------------------------
 # Startup: normal ramdor read first. Only if that XML cannot be read, use the
 # previous atomically replaced database. Nothing is migrated or normalized.
-# -----------------------------------------------------------------------------
 read_pattern = re.compile(
     r'''\s*if\s*\(File\.Exists\(_file_name\)\)\s*\{\s*try\s*\{\s*ds\.ReadXml\(_file_name\);\s*\}\s*catch\s*\{\s*return\s+false;\s*\}\s*\}''',
     re.MULTILINE,
 )
-new_read = r'''
+new_read = source_eol(r'''
             _loaded_from_lastgood = false;
             string lastGood = LastGoodFileName(_file_name);
 
@@ -91,15 +92,11 @@ new_read = r'''
                 ds = recovered;
                 _loaded_from_lastgood = true;
                 Debug.Print("Database.xml is missing. Loaded database.lastgood.xml instead.");
-            }'''
-text, count = read_pattern.subn(new_read, text, count=1)
+            }''')
+text, count = read_pattern.subn(lambda m: new_read, text, count=1)
 if count != 1:
     raise RuntimeError(f"original ramdor Init ReadXml block not found uniquely; matches={count}")
 
-# -----------------------------------------------------------------------------
-# Atomic write. Same public method/signature and same DBMan callback as ramdor.
-# The temp file is fully flushed and read back before it may replace database.xml.
-# -----------------------------------------------------------------------------
 def replace_method(src: str, signature: str, replacement: str) -> str:
     start = src.find(signature)
     if start < 0:
@@ -119,7 +116,7 @@ def replace_method(src: str, signature: str, replacement: str) -> str:
         i += 1
     raise RuntimeError("closing brace not found")
 
-write_method = r'''        public static bool WriteDB(string fn, DataSet dsIN)
+write_method = source_eol(r'''        public static bool WriteDB(string fn, DataSet dsIN)
         {
             string temp = fn + ".tmp";
             string lastGood = LastGoodFileName(fn);
@@ -135,7 +132,7 @@ write_method = r'''        public static bool WriteDB(string fn, DataSet dsIN)
                     fs.Flush(true);
                 }
 
-                // A successfully written but unreadable XML file must never replace the live DB.
+                // An unreadable temp XML must never replace the live database.
                 DataSet verify = new DataSet("Data");
                 verify.ReadXml(temp);
 
@@ -143,8 +140,7 @@ write_method = r'''        public static bool WriteDB(string fn, DataSet dsIN)
                 {
                     if (primaryFile && _loaded_from_lastgood)
                     {
-                        // The destination is the corrupt file which caused recovery.
-                        // Replace it without overwriting the known-good backup with bad data.
+                        // Do not replace the known-good backup with the corrupt live file.
                         File.Replace(temp, fn, null, true);
                     }
                     else
@@ -172,18 +168,16 @@ write_method = r'''        public static bool WriteDB(string fn, DataSet dsIN)
                 return false;
             }
             return true;
-        }'''
-
+        }''')
 text = replace_method(text, "        public static bool WriteDB(string fn, DataSet dsIN)", write_method)
 
-required = (
+for token in (
     "File.Replace(temp, fn, lastGood, true)",
     "fs.Flush(true)",
     "verify.ReadXml(temp)",
     "_loaded_from_lastgood",
     "LastGoodFileName",
-)
-for token in required:
+):
     if token not in text:
         raise RuntimeError(f"minimal safety verification failed: {token}")
 
@@ -198,5 +192,8 @@ for forbidden in (
     if forbidden in text:
         raise RuntimeError(f"forbidden compatibility machinery present after patch: {forbidden}")
 
-p.write_text(text, encoding="utf-8-sig", newline="\n")
+out = text.encode("utf-8")
+if had_bom:
+    out = b"\xef\xbb\xbf" + out
+p.write_bytes(out)
 print("Applied minimal ramdor DB safety: atomic write + last-good fallback only.")
