@@ -1,13 +1,13 @@
 from pathlib import Path
+import re
 import sys
 
 
-def replace_once(path: Path, old: str, new: str, label: str) -> None:
-    text = path.read_text(encoding="utf-8", errors="strict")
-    count = text.count(old)
+def sub_once(text: str, pattern: str, repl: str, label: str, flags: int = 0) -> str:
+    out, count = re.subn(pattern, repl, text, count=1, flags=flags)
     if count != 1:
-        raise RuntimeError(f"{label}: expected one patch point, found {count} in {path}")
-    path.write_text(text.replace(old, new), encoding="utf-8", newline="")
+        raise RuntimeError(f"{label}: expected one patch point, found {count}")
+    return out
 
 
 def main() -> int:
@@ -19,65 +19,68 @@ def main() -> int:
     cmake = src / "CMakeLists.txt"
     factory = src / "TransceiverFactory.cpp"
 
-    # SQ4KOU Windows/TCI build: OmniRig is not used.  Upstream JTDX requires a
-    # registered OmniRig COM server during CMake configure, which makes a clean
-    # unattended Windows build fail.  Keep all other Windows/TCI/Hamlib paths.
-    replace_once(
-        cmake,
-        "\n  set (wsjt_qt_CXXSRCS\n"
-        "    ${wsjt_qt_CXXSRCS}\n"
-        "    OmniRigTransceiver.cpp\n"
-        "    )\n",
-        "\n",
-        "remove OmniRigTransceiver.cpp from Windows sources",
+    c = cmake.read_text(encoding="utf-8", errors="strict")
+
+    # TCI-focused Windows build: OmniRig is not used.  Current upstream JTDX
+    # nevertheless hard-requires a registered OmniRig COM server at CMake time.
+    # Remove only that optional CAT backend; Hamlib and TCI remain intact.
+    c = sub_once(
+        c,
+        r"(?m)^\s*OmniRigTransceiver\.cpp\s*\r?\n",
+        "",
+        "remove OmniRigTransceiver.cpp from source list",
     )
 
-    text = cmake.read_text(encoding="utf-8", errors="strict")
-    start_marker = "if (WIN32)\n  # generate the OmniRig COM interface source\n"
-    end_marker = "endif (WIN32)\n#\n# decide on platform specifc packing and fixing up"
-    start = text.find(start_marker)
-    if start < 0:
-        raise RuntimeError("OmniRig CMake start marker not found")
-    end = text.find(end_marker, start)
-    if end < 0:
-        raise RuntimeError("OmniRig CMake end marker not found")
-    end += len("endif (WIN32)\n")
-    text = text[:start] + (
-        "# SQ4KOU: OmniRig COM generation disabled for clean TCI Windows build.\n"
-    ) + text[end:]
-    cmake.write_text(text, encoding="utf-8", newline="")
+    c = sub_once(
+        c,
+        r"if \(WIN32\)\r?\n\s*# generate the OmniRig COM interface source\r?\n.*?endif \(WIN32\)\r?\n",
+        "# SQ4KOU: OmniRig COM discovery disabled for TCI Windows build.\n",
+        "remove OmniRig COM discovery block",
+        re.S,
+    )
 
-    replace_once(
-        cmake,
-        "if (WIN32)\n"
-        "  add_definitions (-DQT_NEEDS_QTMAIN)\n"
-        "  find_package (Qt5AxContainer REQUIRED)\n"
-        "endif (WIN32)",
-        "if (WIN32)\n"
-        "  add_definitions (-DQT_NEEDS_QTMAIN)\n"
-        "  # SQ4KOU: Qt5AxContainer is only needed by disabled OmniRig support.\n"
-        "endif (WIN32)",
+    c = sub_once(
+        c,
+        r"(?m)^\s*find_package \(Qt5AxContainer REQUIRED\)\s*\r?\n",
+        "  # SQ4KOU: Qt5AxContainer was required only by OmniRig.\n",
         "remove Qt5AxContainer requirement",
     )
 
-    replace_once(
-        factory,
-        "#if defined (WIN32)\n"
-        "#include \"OmniRigTransceiver.hpp\"\n"
-        "#endif",
-        "// SQ4KOU: OmniRig disabled in this TCI-focused Windows build.",
-        "remove OmniRig include",
+    c = sub_once(
+        c,
+        r"# AX COM servers\r?\nif \(WIN32\)\r?\n\s*include \(QtAxMacros\)\r?\n\s*wrap_ax_server \(GENAXSRCS \$\{AXSERVERSRCS\}\)\r?\nendif \(WIN32\)\r?\n",
+        "# SQ4KOU: OmniRig ActiveX wrapper generation disabled.\n",
+        "remove ActiveX wrapper generation",
     )
 
-    replace_once(
-        factory,
-        "#if defined (WIN32)\n"
-        "  // OmniRig is ActiveX/COM server so only on Windows\n"
-        "  OmniRigTransceiver::register_transceivers (&transceivers_, OmniRigOneId, OmniRigTwoId);\n"
-        "#endif",
-        "  // SQ4KOU: OmniRig registration disabled; TCI/Hamlib remain unchanged.",
+    cmake.write_text(c, encoding="utf-8", newline="")
+
+    f = factory.read_text(encoding="utf-8", errors="strict")
+    f = sub_once(
+        f,
+        r"#if defined \(WIN32\)\r?\n#include \"OmniRigTransceiver\.hpp\"\r?\n#endif\r?\n",
+        "// SQ4KOU: OmniRig disabled in this TCI-focused Windows build.\n",
+        "remove OmniRig include",
+    )
+    f = sub_once(
+        f,
+        r"#if defined \(WIN32\)\r?\n\s*// OmniRig is ActiveX/COM server so only on Windows\r?\n\s*OmniRigTransceiver::register_transceivers \(&transceivers_, OmniRigOneId, OmniRigTwoId\);\r?\n#endif\r?\n",
+        "  // SQ4KOU: OmniRig registration disabled; TCI/Hamlib remain unchanged.\n",
         "remove OmniRig registration",
     )
+    factory.write_text(f, encoding="utf-8", newline="")
+
+    # Fail closed if a build-time OmniRig hook survived.
+    checks = {
+        "CMake OmniRig source": "OmniRigTransceiver.cpp" in c,
+        "CMake dumpcpp": "COMMAND ${DUMPCPP} -getfile" in c,
+        "CMake ActiveX wrapper": "wrap_ax_server (GENAXSRCS" in c,
+        "Factory OmniRig include": "#include \"OmniRigTransceiver.hpp\"" in f,
+        "Factory OmniRig registration": "OmniRigTransceiver::register_transceivers" in f,
+    }
+    bad = [name for name, present in checks.items() if present]
+    if bad:
+        raise RuntimeError("OmniRig disable incomplete: " + ", ".join(bad))
 
     print("OMNIRIG_CI_DISABLE PASS")
     return 0
