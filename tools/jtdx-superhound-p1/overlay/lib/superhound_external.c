@@ -3,7 +3,7 @@
 #endif
 
 /*
- * SQ4KOU JTDX SuperHound P1 bridge
+ * SQ4KOU JTDX SuperHound bridge
  *
  * This file contains no SuperFox/QPC implementation. It passes a 12 kHz
  * JTDX receive buffer to a separately built WSJT-X command-line SuperFox
@@ -17,6 +17,8 @@
 #include <string.h>
 
 #ifdef _WIN32
+#  include <windows.h>
+#  include <io.h>
 #  include <process.h>
 #  define JTDX_GETPID _getpid
 #  define JTDX_POPEN _popen
@@ -94,6 +96,38 @@ static const char *temp_dir(void)
     return p;
 }
 
+static const char *resolve_helper(char *resolved, size_t resolved_size)
+{
+    const char *env_helper = getenv("JTDX_SFRX");
+    if (env_helper && *env_helper) return env_helper;
+
+#ifdef _WIN32
+    if (resolved && resolved_size > 16) {
+        DWORD n = GetModuleFileNameA(NULL, resolved, (DWORD)resolved_size);
+        if (n > 0 && n < resolved_size) {
+            char *slash1 = strrchr(resolved, '\\');
+            char *slash2 = strrchr(resolved, '/');
+            char *slash = slash1;
+            size_t used;
+            if (!slash || (slash2 && slash2 > slash)) slash = slash2;
+            if (slash) slash[1] = '\0';
+            else resolved[0] = '\0';
+
+            used = strlen(resolved);
+            if (used + strlen("sfrx.exe") + 1 < resolved_size) {
+                strcat(resolved, "sfrx.exe");
+                if (_access(resolved, 0) == 0) return resolved;
+            }
+        }
+    }
+#else
+    (void)resolved;
+    (void)resolved_size;
+#endif
+
+    return NULL;
+}
+
 static void forward_line(char *line)
 {
     char *p;
@@ -109,8 +143,9 @@ static void forward_line(char *line)
 
 int jtdx_superhound_external_c(int nutc, const float *samples, int npts)
 {
-    const char *helper = getenv("JTDX_SFRX");
+    const char *helper;
     const char *tdir;
+    char resolved_helper[2048];
     char wav[1024];
     char cmd[4096];
     char line[1024];
@@ -118,6 +153,7 @@ int jtdx_superhound_external_c(int nutc, const float *samples, int npts)
     int rc;
     long pid;
 
+    helper = resolve_helper(resolved_helper, sizeof(resolved_helper));
     if (!helper || !*helper) return 0;
     if (!samples || npts < 180000) return -10;
 
