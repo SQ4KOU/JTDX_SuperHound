@@ -112,6 +112,30 @@ namespace Thetis
             }
         }
 
+        private static void EnsureSQ4KOUProfileExtensions()
+        {
+            string columnName = "CFCPhaseRotatorAuto";
+            string[] tables = { "TXProfile", "TXProfileDef" };
+
+            foreach (string tableName in tables)
+            {
+                if (!ds.Tables.Contains(tableName)) continue;
+
+                DataTable table = ds.Tables[tableName];
+                if (!table.Columns.Contains(columnName))
+                {
+                    DataColumn column = new DataColumn(columnName, typeof(bool));
+                    column.DefaultValue = false;
+                    table.Columns.Add(column);
+                }
+
+                foreach (DataRow row in table.Rows)
+                {
+                    if (row.IsNull(columnName)) row[columnName] = false;
+                }
+            }
+        }
+
         #region Private Member Functions
         // ======================================================
         // Private Member Functions
@@ -269,6 +293,8 @@ namespace Thetis
 
             if (!ds.Tables.Contains("TXProfileDef"))
                 AddTXProfileTable("TXProfileDef", true);
+
+            EnsureSQ4KOUProfileExtensions();
 
             WriteDB();
         }
@@ -9585,13 +9611,11 @@ namespace Thetis
 
             try
             {
-                // IMPORTANT: fresh database creation keeps the original ramdor path.
-                // DBMan expects database.xml to exist immediately after DB.Init().
+                // Fresh database creation keeps the original ramdor path.
                 if (!existedBeforeWrite)
                 {
                     dsIN.WriteXml(fn, XmlWriteMode.WriteSchema);
 
-                    // Verify the newly created file before accepting it.
                     DataSet firstWriteVerify = new DataSet("Data");
                     firstWriteVerify.ReadXml(fn);
 
@@ -9617,7 +9641,6 @@ namespace Thetis
 
                 if (primaryFile && _loaded_from_lastgood)
                 {
-                    // The live file was corrupt; do not overwrite the known-good backup with it.
                     File.Replace(temp, fn, null, true);
                 }
                 else
@@ -9631,7 +9654,6 @@ namespace Thetis
             catch (Exception ex)
             {
                 try { if (File.Exists(temp)) File.Delete(temp); } catch { }
-                // If first creation failed, leave no half-created database.xml behind.
                 if (!existedBeforeWrite)
                 {
                     try { if (File.Exists(fn)) File.Delete(fn); } catch { }
