@@ -14,6 +14,7 @@ def source_eol(s: str) -> str:
 # This patch is intentionally small. Database semantics remain ramdor/Thetis.
 # Only existing databases use atomic replace + last-good fallback.
 # A genuinely new/missing database follows the original ramdor creation path.
+# The only schema extension is CFCPhaseRotatorAuto, required by this SQ4KOU/EU2AV Setup.
 for forbidden in (
     "IsDatabaseCompatible",
     "CurrentDatabaseSchemaVersion",
@@ -30,7 +31,7 @@ if marker not in text:
     raise RuntimeError("private member marker not found")
 
 helpers = source_eol(r'''        // SQ4KOU: minimal database corruption protection only.
-        // Database schema, import, migration and compatibility semantics remain ramdor/Thetis.
+        // Import, migration and compatibility semantics remain ramdor/Thetis.
         private static bool _loaded_from_lastgood = false;
 
         private static string LastGoodFileName(string filename)
@@ -64,6 +65,52 @@ helpers = source_eol(r'''        // SQ4KOU: minimal database corruption protecti
 # Idempotent: the workflow can run again after the real C# source was already committed.
 if "private static bool _loaded_from_lastgood = false;" not in text:
     text = text.replace(marker, helpers + marker, 1)
+
+# This branch's Setup reads CFCPhaseRotatorAuto directly from TXProfile.
+# Upstream ramdor does not have that EU2AV field, so a pure ramdor database.cs
+# creates a fresh database that immediately fails during Setup initialisation.
+# Add exactly this one branch-required field to both profile tables. Existing
+# values are never touched; only a missing/DBNull field becomes false.
+profile_extension = source_eol(r'''        private static void EnsureSQ4KOUProfileExtensions()
+        {
+            string columnName = "CFCPhaseRotatorAuto";
+            string[] tables = { "TXProfile", "TXProfileDef" };
+
+            foreach (string tableName in tables)
+            {
+                if (!ds.Tables.Contains(tableName)) continue;
+
+                DataTable table = ds.Tables[tableName];
+                if (!table.Columns.Contains(columnName))
+                {
+                    DataColumn column = new DataColumn(columnName, typeof(bool));
+                    column.DefaultValue = false;
+                    table.Columns.Add(column);
+                }
+
+                foreach (DataRow row in table.Rows)
+                {
+                    if (row.IsNull(columnName)) row[columnName] = false;
+                }
+            }
+        }
+
+''')
+if "private static void EnsureSQ4KOUProfileExtensions()" not in text:
+    text = text.replace(marker, profile_extension + marker, 1)
+
+# Ensure the extension after ramdor has created/verified TXProfile and TXProfileDef,
+# but before the database is written.
+if "EnsureSQ4KOUProfileExtensions();" not in text:
+    verify_pattern = re.compile(
+        r'''(\s*if\s*\(!ds\.Tables\.Contains\("TXProfileDef"\)\)\s*AddTXProfileTable\("TXProfileDef",\s*true\);\s*)(WriteDB\(\);)''',
+        re.MULTILINE,
+    )
+    def add_extension_call(m):
+        return m.group(1) + source_eol("\n            EnsureSQ4KOUProfileExtensions();\n\n            ") + m.group(2)
+    text, count = verify_pattern.subn(add_extension_call, text, count=1)
+    if count != 1:
+        raise RuntimeError(f"VerifyTables TXProfileDef/WriteDB block not found uniquely; matches={count}")
 
 # Startup: normal ramdor read first. If an EXISTING database is corrupt, try
 # last-good. If database.xml is simply missing, do nothing here: ramdor's
@@ -136,13 +183,11 @@ write_method = source_eol(r'''        public static bool WriteDB(string fn, Data
 
             try
             {
-                // IMPORTANT: fresh database creation keeps the original ramdor path.
-                // DBMan expects database.xml to exist immediately after DB.Init().
+                // Fresh database creation keeps the original ramdor path.
                 if (!existedBeforeWrite)
                 {
                     dsIN.WriteXml(fn, XmlWriteMode.WriteSchema);
 
-                    // Verify the newly created file before accepting it.
                     DataSet firstWriteVerify = new DataSet("Data");
                     firstWriteVerify.ReadXml(fn);
 
@@ -168,7 +213,6 @@ write_method = source_eol(r'''        public static bool WriteDB(string fn, Data
 
                 if (primaryFile && _loaded_from_lastgood)
                 {
-                    // The live file was corrupt; do not overwrite the known-good backup with it.
                     File.Replace(temp, fn, null, true);
                 }
                 else
@@ -182,7 +226,6 @@ write_method = source_eol(r'''        public static bool WriteDB(string fn, Data
             catch (Exception ex)
             {
                 try { if (File.Exists(temp)) File.Delete(temp); } catch { }
-                // If first creation failed, leave no half-created database.xml behind.
                 if (!existedBeforeWrite)
                 {
                     try { if (File.Exists(fn)) File.Delete(fn); } catch { }
@@ -199,6 +242,9 @@ write_method = source_eol(r'''        public static bool WriteDB(string fn, Data
 text = replace_method(text, "        public static bool WriteDB(string fn, DataSet dsIN)", write_method)
 
 for token in (
+    "EnsureSQ4KOUProfileExtensions();",
+    'columnName = "CFCPhaseRotatorAuto"',
+    'string[] tables = { "TXProfile", "TXProfileDef" }',
     "dsIN.WriteXml(fn, XmlWriteMode.WriteSchema)",
     "firstWriteVerify.ReadXml(fn)",
     "File.Replace(temp, fn, lastGood, true)",
@@ -208,7 +254,7 @@ for token in (
     "LastGoodFileName",
 ):
     if token not in text:
-        raise RuntimeError(f"minimal safety verification failed: {token}")
+        raise RuntimeError(f"minimal DB verification failed: {token}")
 
 if "Database.xml is missing. Loaded database.lastgood.xml instead." in text:
     raise RuntimeError("missing database must create fresh, not recover last-good")
@@ -228,4 +274,4 @@ out = text.encode("utf-8")
 if had_bom:
     out = b"\xef\xbb\xbf" + out
 p.write_bytes(out)
-print("Applied ramdor DB semantics: original fresh creation + atomic protection for existing DB only.")
+print("Applied ramdor DB semantics + CFCPhaseRotatorAuto bridge + minimal atomic safety.")
