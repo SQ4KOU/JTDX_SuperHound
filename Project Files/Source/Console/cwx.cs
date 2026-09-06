@@ -274,6 +274,19 @@ namespace Thetis
 
         #region radio interface and fifo functions
 
+        // SQ4KOU P1 CWX: keep MOX/PTT asserted across a standard 7-element
+        // Morse word gap.  The user's CWX Drop Delay remains authoritative when
+        // it is longer; 8 dot periods are only a Protocol-1 software-CWX minimum.
+        private int p1_cwx_ptt_hold_elements()
+        {
+            int configured = tel > 0 ? Math.Max(0, ttdel / tel) : 0;
+            if (NetworkIO.CurrentRadioProtocol == RadioProtocol.USB &&
+                console.SQ4KOUP1SoftwareCWXActive)
+                return Math.Max(configured, 8);
+
+            return configured;
+        }
+
         private bool setptt_memory = false;
         private bool cwx_mox_latched = false;
 
@@ -2251,7 +2264,7 @@ namespace Thetis
             if (newptt > 0)
             {
                 newptt--;
-                ttx = ttdel / tel;
+                ttx = p1_cwx_ptt_hold_elements();
                 if (newptt > 0) return;
                 //				Debug.WriteLine("newppt delay over");
                 setkey(true);				// this was the defered key down
@@ -2286,7 +2299,7 @@ namespace Thetis
                 if (data == EL_PTT)		// ptt only command
                 {
                     setptt(true);
-                    ttx = ttdel / tel;
+                    ttx = p1_cwx_ptt_hold_elements();
                 }
                 if ((data == EL_KEYDOWN) || (data == EL_KEYUP))		// key command
                 {
@@ -2298,7 +2311,7 @@ namespace Thetis
                             //							Debug.WriteLine("start newptt");
                         }
                         setptt(true);
-                        ttx = ttdel / tel;
+                        ttx = p1_cwx_ptt_hold_elements();
                         if (newptt > 0) return;		// the key will get pressed after newptt
                         setkey(true);
                     }
