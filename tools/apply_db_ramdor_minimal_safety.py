@@ -1,9 +1,10 @@
 from pathlib import Path
+import re
 
 p = Path(r"Project Files/Source/Console/database.cs")
 text = p.read_text(encoding="utf-8-sig")
 
-# This patch is intentionally small.  The database semantics remain ramdor/Thetis.
+# This patch is intentionally small. The database semantics remain ramdor/Thetis.
 # We add only: (1) atomic write with previous good copy, (2) startup fallback.
 
 for forbidden in (
@@ -58,22 +59,15 @@ helpers = r'''        // SQ4KOU: minimal database corruption protection only.
 text = text.replace(marker, helpers + marker, 1)
 
 # -----------------------------------------------------------------------------
-# Startup: normal ramdor read first.  Only if that XML cannot be read, use the
-# previous atomically replaced database.  Nothing is migrated or normalized.
+# Startup: normal ramdor read first. Only if that XML cannot be read, use the
+# previous atomically replaced database. Nothing is migrated or normalized.
 # -----------------------------------------------------------------------------
-old_read = r'''            if (File.Exists(_file_name))
-            {
-                try
-                {
-                    ds.ReadXml(_file_name);
-                }
-                catch
-                {
-                    return false;
-                }
-            }
-'''
-new_read = r'''            _loaded_from_lastgood = false;
+read_pattern = re.compile(
+    r'''\s*if\s*\(File\.Exists\(_file_name\)\)\s*\{\s*try\s*\{\s*ds\.ReadXml\(_file_name\);\s*\}\s*catch\s*\{\s*return\s+false;\s*\}\s*\}''',
+    re.MULTILINE,
+)
+new_read = r'''
+            _loaded_from_lastgood = false;
             string lastGood = LastGoodFileName(_file_name);
 
             if (File.Exists(_file_name))
@@ -97,14 +91,13 @@ new_read = r'''            _loaded_from_lastgood = false;
                 ds = recovered;
                 _loaded_from_lastgood = true;
                 Debug.Print("Database.xml is missing. Loaded database.lastgood.xml instead.");
-            }
-'''
-if old_read not in text:
-    raise RuntimeError("original ramdor Init ReadXml block not found")
-text = text.replace(old_read, new_read, 1)
+            }'''
+text, count = read_pattern.subn(new_read, text, count=1)
+if count != 1:
+    raise RuntimeError(f"original ramdor Init ReadXml block not found uniquely; matches={count}")
 
 # -----------------------------------------------------------------------------
-# Atomic write.  Same public method/signature and same DBMan callback as ramdor.
+# Atomic write. Same public method/signature and same DBMan callback as ramdor.
 # The temp file is fully flushed and read back before it may replace database.xml.
 # -----------------------------------------------------------------------------
 def replace_method(src: str, signature: str, replacement: str) -> str:
@@ -150,7 +143,7 @@ write_method = r'''        public static bool WriteDB(string fn, DataSet dsIN)
                 {
                     if (primaryFile && _loaded_from_lastgood)
                     {
-                        // The current destination is the corrupt file which caused recovery.
+                        // The destination is the corrupt file which caused recovery.
                         // Replace it without overwriting the known-good backup with bad data.
                         File.Replace(temp, fn, null, true);
                     }
@@ -187,14 +180,13 @@ required = (
     "File.Replace(temp, fn, lastGood, true)",
     "fs.Flush(true)",
     "verify.ReadXml(temp)",
-    "database.lastgood.xml",
     "_loaded_from_lastgood",
+    "LastGoodFileName",
 )
 for token in required:
     if token not in text:
         raise RuntimeError(f"minimal safety verification failed: {token}")
 
-# Verify that no prior over-engineered compatibility system has crept back in.
 for forbidden in (
     "IsDatabaseCompatible",
     "CurrentDatabaseSchemaVersion",
