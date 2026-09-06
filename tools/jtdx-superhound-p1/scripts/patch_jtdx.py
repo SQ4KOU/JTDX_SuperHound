@@ -41,13 +41,30 @@ def main() -> int:
         "  lib/superhound_external.c",
     )
 
+    # Dedicated SuperHound bit in the C/Fortran shared parameter block.
+    # This is deliberately separate from classic Hound so native Hound behavior
+    # does not invoke the SuperFox helper.
+    commons = src / "commons.h"
+    replace_once(
+        commons,
+        "    bool lhideft8dupes;\n    bool lhound;\n    bool lhidehash;",
+        "    bool lhideft8dupes;\n    bool lhound;\n    bool lsuperhound;\n    bool lhidehash;",
+    )
+
+    jt9com = lib / "jt9com.f90"
+    replace_once(
+        jt9com,
+        "     logical(c_bool) :: lhideft8dupes\n     logical(c_bool) :: lhound\n     logical(c_bool) :: lhidehash",
+        "     logical(c_bool) :: lhideft8dupes\n     logical(c_bool) :: lhound\n     logical(c_bool) :: lsuperhound\n     logical(c_bool) :: lhidehash",
+    )
+
     # SuperFox RX is additive: native JTDX FT8/Hound decoding remains intact.
     decoder = lib / "decoder.f90"
     anchor = "     if(params%nmode.eq.8) call ft8apset(params%lmycallstd,params%lhiscallstd,numthreads)"
     replacement = anchor + "\n\n" + "\n".join([
         "! SQ4KOU SUPER HOUND RX - external SuperFox helper.",
-        "! Full fresh FT8 Hound cycle only. Native JTDX FT8 remains unchanged.",
-        "     if(params%lhound .and. .not.params%nagain .and. params%nzhsym.ge.49) then",
+        "! Full fresh FT8 SuperHound cycle only. Native JTDX FT8/Hound remains unchanged.",
+        "     if(params%lsuperhound .and. .not.params%nagain .and. params%nzhsym.ge.49) then",
         "        call superhound_external(nutc,dd8)",
         "     endif",
         "! END SQ4KOU SUPER HOUND RX",
@@ -147,6 +164,16 @@ def main() -> int:
 '''
     replace_once(mainwindow, setup_anchor, setup_patch)
 
+    # Propagate the explicit SuperHound UI state into the shared decoder parameter
+    # block. Classic lhound remains untouched and keeps its original semantics.
+    lhound_param_anchor = "  dec_data.params.lhound=m_houndMode ? 1 : 0;"
+    lhound_param_patch = lhound_param_anchor + r'''
+  QAction *sq4kouSuperHoundDecode = findChild<QAction *>("actionSQ4KOU_SuperHound");
+  dec_data.params.lsuperhound =
+      (sq4kouSuperHoundDecode && sq4kouSuperHoundDecode->isChecked()) ? 1 : 0;
+'''
+    replace_once(mainwindow, lhound_param_anchor, lhound_param_patch)
+
     # The old menu action opened a second top-level window. It now shows/hides the
     # embedded bottom monitor instead.
     replace_once(
@@ -186,7 +213,7 @@ def main() -> int:
     )
 
     print("PATCH PASS")
-    print("features=superfox-rx,superhound-ui,integrated-bottom-monitor")
+    print("features=superfox-rx,superhound-isolated-mode,superhound-ui,integrated-bottom-monitor")
     print(f"source={src}")
     return 0
 
