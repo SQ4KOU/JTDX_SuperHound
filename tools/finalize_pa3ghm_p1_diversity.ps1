@@ -118,10 +118,26 @@ if ($bad) {
     throw 'Unresolved merge markers remain'
 }
 
-$count = (Select-String -LiteralPath $tci -SimpleMatch 'shouldAbortSq4kouP1DiversityWorker(c)' | Measure-Object).Count
-Write-Host "P1 Diversity worker guard call sites: $count"
-if ($count -lt 10) {
-    throw "Too few guarded PA3GHM worker call sites: $count"
+# Structural audit of PA3GHM asynchronous Diversity block.
+# TL2-4 contains exactly five ThreadPool workers: Sweep, FastSweep, AutoNull,
+# SmartNull and UltraNull. Their original disconnect/dispose control points
+# collapse to six guarded call sites after the P1 TX adaptation.
+$workerCount = ([regex]::Matches($section, 'System\.Threading\.ThreadPool\.QueueUserWorkItem\(_ =>')).Count
+$guardCount = ([regex]::Matches($section, 'shouldAbortSq4kouP1DiversityWorker\(c\)')).Count
+$legacyDisconnectCount = ([regex]::Matches($section, 'listener\.m_disconnected')).Count
+
+Write-Host "PA3GHM async Diversity workers: $workerCount"
+Write-Host "P1 Diversity worker guard call sites: $guardCount"
+Write-Host "Legacy listener.m_disconnected checks remaining in async block: $legacyDisconnectCount"
+
+if ($workerCount -ne 5) {
+    throw "Unexpected PA3GHM async Diversity worker count: $workerCount (expected 5)"
+}
+if ($guardCount -lt 6) {
+    throw "Too few guarded PA3GHM worker control points: $guardCount (expected at least 6)"
+}
+if ($legacyDisconnectCount -ne 0) {
+    throw "Ungarded legacy disconnect checks remain in PA3GHM async Diversity block: $legacyDisconnectCount"
 }
 
 Write-Host 'PA3GHM TL2-4 + SQ4KOU P1 finalization gates: PASS'
