@@ -691,6 +691,13 @@
     <Compile Include="DiversityForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="DiversityForm.PA3GHMNative.cs">
+      <DependentUpon>DiversityForm.cs</DependentUpon>
+    </Compile>
+    <Compile Include="PA3GHMNativeDiversity.cs" />
+    <Compile Include="Setup.PA3GHMNative.cs">
+      <DependentUpon>setup.cs</DependentUpon>
+    </Compile>
     <Compile Include="dsp.cs">
       <SubType>Code</SubType>
     </Compile>

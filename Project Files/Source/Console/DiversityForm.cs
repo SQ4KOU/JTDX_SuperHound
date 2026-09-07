@@ -1,4 +1,4 @@
-//=================================================================
+ï»¿//=================================================================
 // DiversityForm.cs
 //=================================================================
 // PowerSDR is a C# implementation of a Software Defined Radio.
@@ -64,7 +64,7 @@ namespace Thetis
     /// <summary>
     /// Summary description for DiversityForm.
     /// </summary>
-    public class DiversityForm : System.Windows.Forms.Form
+    public partial class DiversityForm : System.Windows.Forms.Form
     {
         //private Point p = new Point(200, 200); //MW0LGE_21c
         //private const double m_SCALEFACTOR = 10.0; //MW0LGE_21f this now applied to udR1 and udR2
@@ -192,6 +192,8 @@ namespace Thetis
             //chkLockR.Visible = true;
 
             Common.RestoreForm(this, "DiversityForm", true);
+            // NATIVE_PA3GHM_DIVERSITY_PANEL
+            InitPA3GHMNativePanel();
 
             //[2.10.3.6]MW0LGE implement memories. A bit of a hack to store all this in a text box, but it is easy with the saveform/restoreform
             try
@@ -1508,9 +1510,9 @@ namespace Thetis
             g.TextRenderingHint = TextRenderingHint.AntiAlias;
             // draw the background of the radar
             g.FillEllipse(new LinearGradientBrush(new Point((int)(size / 2), 0), new Point((int)(size / 2), size - 1), topColor, bottomColor), 0, 0, size - 1, size - 1);
-            // draw the outer ring (0° elevation)
+            // draw the outer ring (0ï¿½ elevation)
             g.DrawEllipse(pen, 0, 0, size - 1, size - 1);
-            // draw the inner ring (60° elevation)
+            // draw the inner ring (60ï¿½ elevation)
             int interval = size / 2;
             // draw the middle ring 
             g.DrawEllipse(pen, (size - interval) / 2, (size - interval) / 2, interval, interval);
@@ -1555,12 +1557,12 @@ namespace Thetis
             //g.TextRenderingHint = TextRenderingHint.AntiAlias;
             //// draw the background of the radar
             //g.FillEllipse(new LinearGradientBrush(new Point((int)(size / 2), 0), new Point((int)(size / 2), size - 1), topColor, bottomColor), 0, 0, size - 1, size - 1);
-            //// draw the outer ring (0° elevation)
+            //// draw the outer ring (0ï¿½ elevation)
             //g.DrawEllipse(pen, 0, 0, size - 1, size - 1);
-            //// draw the inner ring (60° elevation)
+            //// draw the inner ring (60ï¿½ elevation)
             ////int interval = size / 3;
             ////g.DrawEllipse(pen, (size - interval) / 2, (size - interval) / 2, interval, interval);
-            //// draw the middle ring (30° elevation)
+            //// draw the middle ring (30ï¿½ elevation)
             ////interval *= 2;
             ////g.DrawEllipse(pen, (size - interval) / 2, (size - interval) / 2, interval, interval);
             //int interval = size / 2;

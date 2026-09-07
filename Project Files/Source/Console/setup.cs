@@ -154,6 +154,8 @@ namespace Thetis
             Size = MinimumSize;
 
             console = c;
+            // NATIVE_PA3GHM_SETUP_CONTROLS
+            InitPA3GHMNativeSetupControls();
             this.Owner = c;
 
             _frmBandwidth = new frmBandwidth();
