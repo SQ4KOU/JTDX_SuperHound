@@ -40,31 +40,32 @@ if (-not $text.Contains($helperMarker)) {
     $text = $text.Replace($anchor, $helper + $anchor)
 }
 
+# PA3GHM keeps Sweep/FastSweep/Auto/Smart/Ultra in one contiguous block.
+# Use the DDC handler as the stable end anchor rather than the many nested TL2 END markers.
 $startMarker = "`t`t// diversity_sweep_ex:type,start,end,step,settleMs;"
-$endMarker = "`t`t// [ThetisLink TL2-1] END"
+$endMarker = "`t`t// ddc_sample_rate_ex:rx,rate;"
 $start = $text.IndexOf($startMarker)
 if ($start -lt 0) {
     throw 'Cannot find start of PA3GHM asynchronous Diversity section'
 }
 $end = $text.IndexOf($endMarker, $start)
 if ($end -lt 0) {
-    throw 'Cannot find end of PA3GHM asynchronous Diversity section'
+    throw 'Cannot find DDC marker after PA3GHM asynchronous Diversity section'
 }
-$end += $endMarker.Length
 
 $before = $text.Substring(0, $start)
 $section = $text.Substring($start, $end - $start)
 $after = $text.Substring($end)
 
+# First collapse compound disconnect/disposed checks, then every remaining listener
+# disconnect check in the PA3GHM async block. This preserves each original control-flow
+# action (return, return dbm, negated final-send check) while adding the P1 TX condition.
 $section = $section.Replace(
-    'if (listener.m_disconnected || c == null || c.IsDisposed) return;',
-    'if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;')
+    'listener.m_disconnected || c == null || c.IsDisposed',
+    'listener.shouldAbortSq4kouP1DiversityWorker(c)')
 $section = $section.Replace(
-    'if (listener.m_disconnected || c == null || c.IsDisposed) return dbm;',
-    'if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return dbm;')
-$section = $section.Replace(
-    'if (listener.m_disconnected) return;',
-    'if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;')
+    'listener.m_disconnected',
+    'listener.shouldAbortSq4kouP1DiversityWorker(c)')
 
 $text = $before + $section + $after
 [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($true))
