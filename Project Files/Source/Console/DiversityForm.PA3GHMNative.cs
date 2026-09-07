@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -62,12 +62,24 @@ namespace Thetis
 
         private void EnsurePA3GHMNativePanelSize()
         {
+            // RestoreForm may restore a stale child GroupBox height. The operator controls
+            // must always remain fully visible, so final layout wins after RestoreForm.
             Size min = this.MinimumSize;
             if (min.Width < 736 || min.Height < 637)
                 this.MinimumSize = new Size(Math.Max(736, min.Width), Math.Max(637, min.Height));
 
             if (this.ClientSize.Width < 720 || this.ClientSize.Height < 598)
                 this.ClientSize = new Size(Math.Max(720, this.ClientSize.Width), Math.Max(598, this.ClientSize.Height));
+
+            if (grpPA3GHMNative != null)
+            {
+                grpPA3GHMNative.Location = new Point(320, 6);
+                grpPA3GHMNative.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+                grpPA3GHMNative.Size = new Size(
+                    Math.Max(392, this.ClientSize.Width - 328),
+                    Math.Max(582, this.ClientSize.Height - 12));
+                grpPA3GHMNative.BringToFront();
+            }
         }
 
         private void InitPA3GHMNativePanel()
