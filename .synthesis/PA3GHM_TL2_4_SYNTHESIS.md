@@ -25,3 +25,5 @@ Mandatory retained SQ4KOU functions:
 - GPS/CMD07 telemetry
 - hardware snapshot telemetry and antenna TCI
 - SQ4KOU database safety/compatibility changes
+
+Final SQ4KOU P1 adaptation: all five PA3GHM async Diversity handlers abort safely on P1 MOX/TUNE.

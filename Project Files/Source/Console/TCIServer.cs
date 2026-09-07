@@ -3142,6 +3142,30 @@ namespace Thetis
 			sendTextFrame("diversity_gain_ex:" + rx + "," + ((int)(gain * 1000m)) + ";");
 		}
 
+		// SQ4KOU_P1_DIVERSITY_WORKER_TX_GUARD
+		// PA3GHM null/sweep workers run asynchronously. In Protocol 1 our
+		// cmaster TX gate deliberately stops EXTDIV for MOX. Do not let a
+		// background worker keep changing phase/gain while that gate is active.
+		// Protocol 2 and normal RX behaviour are unchanged.
+		private bool shouldAbortSq4kouP1DiversityWorker(Console c)
+		{
+			if (m_disconnected || c == null || c.IsDisposed) return true;
+			if (NetworkIO.CurrentRadioProtocol != RadioProtocol.USB) return false;
+
+			try
+			{
+				if (c.InvokeRequired)
+					return (bool)c.Invoke(new Func<bool>(() => c.MOX || c.TUN));
+
+				return c.MOX || c.TUN;
+			}
+			catch
+			{
+				// Fail safe: an invalid UI state must never let the P1 worker
+				// alter Diversity during a possible TX transition.
+				return true;
+			}
+		}
 		// diversity_sweep_ex:type,start,end,step,settleMs;  type is "phase" or "gain".
 		// Result frame: diversity_sweep_result_ex:type,val1:rssi1,val2:rssi2,...;
 		// Inner-tuple separator stays `:` for TL-server compatibility (sdr-remote tci_parser.rs:563).
@@ -3172,7 +3196,7 @@ namespace Thetis
 					int safety = 0;
 					while (val <= end && safety++ < 720)
 					{
-						if (listener.m_disconnected || c == null || c.IsDisposed) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						float currentVal = val;
 						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 						{
@@ -3197,7 +3221,7 @@ namespace Thetis
 
 						System.Threading.Thread.Sleep(settleMs);
 
-						if (listener.m_disconnected || c == null || c.IsDisposed) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						float dbm = -200f;
 						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 						{
@@ -3208,7 +3232,7 @@ namespace Thetis
 						val += step;
 					}
 
-					if (!listener.m_disconnected)
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 						listener.sendTextFrame("diversity_sweep_result_ex:" + sweepType + "," + string.Join(",", results) + ";");
 				}
 				catch (Exception ex)
@@ -3252,7 +3276,7 @@ namespace Thetis
 
 					Func<float, System.Collections.Generic.List<string>, bool> doStep = (currentVal, resultList) =>
 					{
-						if (listener.m_disconnected || c == null || c.IsDisposed) return false;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return false;
 						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 						{
 							if (isPhase)
@@ -3276,7 +3300,7 @@ namespace Thetis
 							}
 						}));
 						if (settleMs > 0) System.Threading.Thread.Sleep(settleMs);
-						if (listener.m_disconnected || c == null || c.IsDisposed) return false;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return false;
 						float dbm = -200f;
 						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 						{
@@ -3306,7 +3330,7 @@ namespace Thetis
 					}
 
 					sw.Stop();
-					if (listener.m_disconnected) return;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 					listener.sendTextFrame("diversity_fastsweep_result_ex:fwd_" + sweepType + "," +
 						string.Join(",", fwdResults) + ";");
 					listener.sendTextFrame("diversity_fastsweep_result_ex:bwd_" + sweepType + "," +
@@ -3499,7 +3523,7 @@ namespace Thetis
 					float bestSmeter = 999f;
 					bool firstPhaseRound = true;
 
-					if (listener.m_disconnected || c == null || c.IsDisposed) return;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 					c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 					{
 						decimal gain = c.DiversityRXRef ?
@@ -3516,7 +3540,7 @@ namespace Thetis
 
 						foreach (float offset in offsets)
 						{
-							if (listener.m_disconnected || c == null || c.IsDisposed) return;
+							if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 							float emittedPhase = 0f;
 							float emittedGain = 1f;
 							bool emittedIsRx1Ref = false;
@@ -3549,7 +3573,7 @@ namespace Thetis
 
 							// Live circle-position broadcast — emit per-step phase/gain so
 							// the calling client sees the algorithm's tuning trajectory.
-							if (!listener.m_disconnected)
+							if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 							{
 								if (isPhase)
 								{
@@ -3566,7 +3590,7 @@ namespace Thetis
 
 							System.Threading.Thread.Sleep(settleMs);
 
-							if (listener.m_disconnected || c == null || c.IsDisposed) return;
+							if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 							float dbm = -200f;
 							c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 							{
@@ -3580,7 +3604,7 @@ namespace Thetis
 							}
 						}
 
-						if (listener.m_disconnected || c == null || c.IsDisposed) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						if (isPhase)
 						{
 							bestPhase = firstPhaseRound ? roundBestValue : bestPhase + roundBestValue;
@@ -3591,7 +3615,7 @@ namespace Thetis
 							{
 								c.CATDiversityPhase = (decimal)bestPhase;
 							}));
-							if (!listener.m_disconnected)
+							if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 								listener.sendTextFrame("diversity_phase_ex:" + ((int)(bestPhase * 100f)) + ";");
 						}
 						else
@@ -3613,7 +3637,7 @@ namespace Thetis
 								}
 								bestGainEmit = (float)gain;
 							}));
-							if (!listener.m_disconnected)
+							if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 							{
 								int nonRefRx = isRx1RefEmit ? 1 : 0;
 								int refRx = isRx1RefEmit ? 0 : 1;
@@ -3625,14 +3649,14 @@ namespace Thetis
 						if (roundBestSmeter < bestSmeter)
 							bestSmeter = roundBestSmeter;
 
-						if (listener.m_disconnected) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						listener.sendTextFrame("diversity_autonull_status_ex:progress," + (round + 1) + "," + stepList.Count +
 							"," + bestPhase.ToString("F1", ic) +
 							"," + bestGainDb.ToString("F1", ic) +
 							"," + bestSmeter.ToString("F1", ic) + ";");
 					}
 
-					if (listener.m_disconnected || c == null || c.IsDisposed) return;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 					float offDbm = -200f, onDbm = -200f;
 					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = false; }));
 					System.Threading.Thread.Sleep(500);
@@ -3648,7 +3672,7 @@ namespace Thetis
 					}));
 
 					float improvement = offDbm - onDbm;
-					if (!listener.m_disconnected)
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 					{
 						listener.sendTextFrame("diversity_autonull_status_ex:done," +
 							bestPhase.ToString("F1", ic) + "," +
@@ -3661,7 +3685,7 @@ namespace Thetis
 				catch (Exception ex)
 				{
 					System.Diagnostics.Debug.Print("Diversity autonull error: " + ex.Message);
-					if (!listener.m_disconnected)
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 						listener.sendTextFrame("diversity_autonull_status_ex:error," + ex.Message.Replace(",", " ") + ";");
 				}
 			});
@@ -3711,21 +3735,21 @@ namespace Thetis
 					{
 						while (p > 180f) p -= 360f;
 						while (p < -180f) p += 360f;
-						if (listener.m_disconnected || c == null || c.IsDisposed) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 						{
 							c.CATDiversityPhase = (decimal)p;
 						}));
 						// Live circle-position broadcast — TL-26 used m_server.BroadcastDiversityPhase
 						// here; we have no equivalent helper, so emit directly to the calling client.
-						if (!listener.m_disconnected)
+						if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 							listener.sendTextFrame("diversity_phase_ex:" + ((int)(p * 100f)) + ";");
 					};
 
 					Action<float> setGain = (g) =>
 					{
 						g = Math.Max(0.01f, Math.Min(10f, g));
-						if (listener.m_disconnected || c == null || c.IsDisposed) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						bool isRx1Ref = false;
 						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 						{
@@ -3739,7 +3763,7 @@ namespace Thetis
 							}
 						}));
 						// Live broadcast: non-ref RX gets g, ref RX always 1.000 (per TL-26 convention).
-						if (!listener.m_disconnected)
+						if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 						{
 							int nonRefRx = isRx1Ref ? 1 : 0;
 							int refRx = isRx1Ref ? 0 : 1;
@@ -3751,7 +3775,7 @@ namespace Thetis
 					Func<float> readAvg = () =>
 					{
 						float dbm = -200f;
-						if (listener.m_disconnected || c == null || c.IsDisposed) return dbm;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return dbm;
 						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 						{
 							dbm = WDSP.CalculateRXMeter(0, 0, WDSP.MeterType.AVG_SIGNAL_STRENGTH);
@@ -3761,12 +3785,12 @@ namespace Thetis
 
 					listener.sendTextFrame("diversity_autonull_status_ex:progress,1,5,0,0,-200;");
 
-					if (listener.m_disconnected || c == null || c.IsDisposed) return;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = false; }));
 					System.Threading.Thread.Sleep(300);
 
 					float rx1Dbm = -200f, rx2Dbm = -200f;
-					if (listener.m_disconnected || c == null || c.IsDisposed) return;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 					c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 					{
 						rx1Dbm = WDSP.CalculateRXMeter(0, 0, WDSP.MeterType.AVG_SIGNAL_STRENGTH);
@@ -3781,7 +3805,7 @@ namespace Thetis
 					float eqGainLin = (float)Math.Pow(10.0, diffDb / 20.0);
 					eqGainLin = Math.Max(0.01f, Math.Min(10f, eqGainLin));
 
-					if (listener.m_disconnected || c == null || c.IsDisposed) return;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = true; }));
 					System.Threading.Thread.Sleep(200);
 					setGain(eqGainLin);
@@ -3795,7 +3819,7 @@ namespace Thetis
 					float bestSmeter = 999f;
 					for (int i = 0; i <= coarseSteps; i++)
 					{
-						if (listener.m_disconnected) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						float p = -180f + i * coarseStep;
 						setPhase(p);
 						System.Threading.Thread.Sleep(coarseSettle);
@@ -3815,7 +3839,7 @@ namespace Thetis
 					bestSmeter = 999f;
 					for (float offset = -fineRange; offset <= fineRange; offset += fineStep)
 					{
-						if (listener.m_disconnected) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						float p = coarseNull + offset;
 						setPhase(p);
 						System.Threading.Thread.Sleep(fineSettle);
@@ -3832,7 +3856,7 @@ namespace Thetis
 						bestPhase.ToString("F1", ic) + ",0," + bestSmeter.ToString("F1", ic) + ";");
 
 					float currentGainDb = 0f;
-					if (listener.m_disconnected || c == null || c.IsDisposed) return;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 					c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 					{
 						decimal gain = c.DiversityRXRef ?
@@ -3844,7 +3868,7 @@ namespace Thetis
 					float bestGainDb = currentGainDb;
 					for (float offsetDb = -gainRangeDb; offsetDb <= gainRangeDb; offsetDb += gainStepDb)
 					{
-						if (listener.m_disconnected) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						float gDb = currentGainDb + offsetDb;
 						float gLin = (float)Math.Pow(10.0, gDb / 20.0);
 						setGain(gLin);
@@ -3863,13 +3887,13 @@ namespace Thetis
 					listener.sendTextFrame("diversity_autonull_status_ex:progress,5,5," +
 						bestPhase.ToString("F1", ic) + "," + bestGainDb.ToString("F1", ic) + "," + bestSmeter.ToString("F1", ic) + ";");
 
-					if (listener.m_disconnected || c == null || c.IsDisposed) return;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 					float offDbm = -200f, onDbm = -200f;
 					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = false; }));
 					System.Threading.Thread.Sleep(500);
 					offDbm = readAvg();
 
-					if (listener.m_disconnected || c == null || c.IsDisposed) return;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = true; }));
 					System.Threading.Thread.Sleep(500);
 					onDbm = readAvg();
@@ -3877,7 +3901,7 @@ namespace Thetis
 					float improvement = offDbm - onDbm;
 					sw.Stop();
 
-					if (!listener.m_disconnected)
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 					{
 						listener.sendTextFrame("diversity_autonull_status_ex:done," +
 							bestPhase.ToString("F1", ic) + "," +
@@ -3890,7 +3914,7 @@ namespace Thetis
 				catch (Exception ex)
 				{
 					System.Diagnostics.Debug.Print("SmartNull error: " + ex.Message);
-					if (!listener.m_disconnected)
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 						listener.sendTextFrame("diversity_autonull_status_ex:error," + ex.Message.Replace(",", " ") + ";");
 				}
 			});
@@ -3937,21 +3961,21 @@ namespace Thetis
 					{
 						while (p > 180f) p -= 360f;
 						while (p < -180f) p += 360f;
-						if (listener.m_disconnected || c == null || c.IsDisposed) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 						{
 							c.CATDiversityPhase = (decimal)p;
 						}));
 						// Live circle-position broadcast — TL-26 used m_server.BroadcastDiversityPhase
 						// here; we have no equivalent helper, so emit directly to the calling client.
-						if (!listener.m_disconnected)
+						if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 							listener.sendTextFrame("diversity_phase_ex:" + ((int)(p * 100f)) + ";");
 					};
 
 					Action<float> setGain = (g) =>
 					{
 						g = Math.Max(0.01f, Math.Min(10f, g));
-						if (listener.m_disconnected || c == null || c.IsDisposed) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						bool isRx1Ref = false;
 						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 						{
@@ -3965,7 +3989,7 @@ namespace Thetis
 							}
 						}));
 						// Live broadcast: non-ref RX gets g, ref RX always 1.000 (per TL-26 convention).
-						if (!listener.m_disconnected)
+						if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 						{
 							int nonRefRx = isRx1Ref ? 1 : 0;
 							int refRx = isRx1Ref ? 0 : 1;
@@ -3977,7 +4001,7 @@ namespace Thetis
 					Func<float> readAvg = () =>
 					{
 						float dbm = -200f;
-						if (listener.m_disconnected || c == null || c.IsDisposed) return dbm;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return dbm;
 						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 						{
 							dbm = WDSP.CalculateRXMeter(0, 0, WDSP.MeterType.AVG_SIGNAL_STRENGTH);
@@ -3987,7 +4011,7 @@ namespace Thetis
 
 					listener.sendTextFrame("diversity_autonull_status_ex:progress,1,4,0,0,-200;");
 
-					if (listener.m_disconnected || c == null || c.IsDisposed) return;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = false; }));
 					System.Threading.Thread.Sleep(100);
 					float rx1Dbm = -200f, rx2Dbm = -200f;
@@ -4014,7 +4038,7 @@ namespace Thetis
 					float fwdBestDbm = 999f;
 					for (int i = 0; i <= totalSteps; i++)
 					{
-						if (listener.m_disconnected) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						float p = -180f + i * coarseStep;
 						setPhase(p);
 						float dbm = readAvg();
@@ -4031,7 +4055,7 @@ namespace Thetis
 					float bwdBestDbm = 999f;
 					for (int i = 0; i <= totalSteps; i++)
 					{
-						if (listener.m_disconnected) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						float p = 180f - i * coarseStep;
 						setPhase(p);
 						float dbm = readAvg();
@@ -4059,7 +4083,7 @@ namespace Thetis
 					listener.sendTextFrame("diversity_autonull_status_ex:progress,3,4," +
 						bestPhase.ToString("F1", ic) + ",0," + bestSmeter.ToString("F1", ic) + ";");
 					float currentGainDb = 0f;
-					if (listener.m_disconnected || c == null || c.IsDisposed) return;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 					c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
 					{
 						decimal gain = c.DiversityRXRef ?
@@ -4070,7 +4094,7 @@ namespace Thetis
 					float bestGainDb = currentGainDb;
 					for (float offsetDb = -gainRangeDb; offsetDb <= gainRangeDb; offsetDb += gainStepDb)
 					{
-						if (listener.m_disconnected) return;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 						float gDb = currentGainDb + offsetDb;
 						float gLin = (float)Math.Pow(10.0, gDb / 20.0);
 						setGain(gLin);
@@ -4090,7 +4114,7 @@ namespace Thetis
 						bestPhase.ToString("F1", ic) + "," + bestGainDb.ToString("F1", ic) + "," + bestSmeter.ToString("F1", ic) + ";");
 					System.Threading.Thread.Sleep(500);
 					float onDbm = readAvg();
-					if (listener.m_disconnected || c == null || c.IsDisposed) return;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
 					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = false; }));
 					System.Threading.Thread.Sleep(500);
 					float offDbm = readAvg();
@@ -4099,7 +4123,7 @@ namespace Thetis
 					float improvement = offDbm - onDbm;
 					sw.Stop();
 
-					if (!listener.m_disconnected)
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 					{
 						listener.sendTextFrame("diversity_autonull_status_ex:done," +
 							bestPhase.ToString("F1", ic) + "," +
@@ -4112,7 +4136,7 @@ namespace Thetis
 				catch (Exception ex)
 				{
 					System.Diagnostics.Debug.Print("UltraNull error: " + ex.Message);
-					if (!listener.m_disconnected)
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
 						listener.sendTextFrame("diversity_autonull_status_ex:error," + ex.Message.Replace(",", " ") + ";");
 				}
 			});
