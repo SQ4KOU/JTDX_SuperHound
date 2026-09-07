@@ -40,34 +40,49 @@ if (-not $text.Contains($helperMarker)) {
     $text = $text.Replace($anchor, $helper + $anchor)
 }
 
-# PA3GHM keeps Sweep/FastSweep/Auto/Smart/Ultra in one contiguous block.
-# Use the DDC handler as the stable end anchor rather than the many nested TL2 END markers.
-$startMarker = "`t`t// diversity_sweep_ex:type,start,end,step,settleMs;"
-$endMarker = "`t`t// ddc_sample_rate_ex:rx,rate;"
-$start = $text.IndexOf($startMarker)
-if ($start -lt 0) {
-    throw 'Cannot find start of PA3GHM asynchronous Diversity section'
+# Return one complete top-level method body. All TCI listener members use two-tab
+# indentation; the next member declaration is therefore a stable semantic boundary
+# even though the PA3GHM null suite is separated from Sweep/FastSweep by DDC/S9 code.
+function Get-HandlerSection([string]$Source, [string]$HandlerName) {
+    $signature = "`t`tprivate void $HandlerName(string[] args)"
+    $start = $Source.IndexOf($signature, [System.StringComparison]::Ordinal)
+    if ($start -lt 0) {
+        throw "Cannot find PA3GHM handler $HandlerName"
+    }
+
+    $memberRegex = [regex]::new('(?m)^\t\t(?:private|public|internal|protected)\s')
+    $next = $memberRegex.Match($Source, $start + $signature.Length)
+    $end = if ($next.Success) { $next.Index } else { $Source.Length }
+    return $Source.Substring($start, $end - $start)
 }
-$end = $text.IndexOf($endMarker, $start)
-if ($end -lt 0) {
-    throw 'Cannot find DDC marker after PA3GHM asynchronous Diversity section'
+
+function Patch-Handler([string]$Source, [string]$HandlerName) {
+    $section = Get-HandlerSection $Source $HandlerName
+    $patched = $section.Replace(
+        'listener.m_disconnected || c == null || c.IsDisposed',
+        'listener.shouldAbortSq4kouP1DiversityWorker(c)')
+    $patched = $patched.Replace(
+        'listener.m_disconnected',
+        'listener.shouldAbortSq4kouP1DiversityWorker(c)')
+
+    if ($patched -eq $section -and -not $section.Contains('shouldAbortSq4kouP1DiversityWorker(c)')) {
+        throw "No guardable disconnect control point found in $HandlerName"
+    }
+    return $Source.Replace($section, $patched)
 }
 
-$before = $text.Substring(0, $start)
-$section = $text.Substring($start, $end - $start)
-$after = $text.Substring($end)
+$handlers = @(
+    'handleDiversitySweepEx',
+    'handleDiversityFastsweepEx',
+    'handleDiversityAutonullEx',
+    'handleDiversitySmartNullEx',
+    'handleDiversityUltraNullEx'
+)
 
-# First collapse compound disconnect/disposed checks, then every remaining listener
-# disconnect check in the PA3GHM async block. This preserves each original control-flow
-# action (return, return dbm, negated final-send check) while adding the P1 TX condition.
-$section = $section.Replace(
-    'listener.m_disconnected || c == null || c.IsDisposed',
-    'listener.shouldAbortSq4kouP1DiversityWorker(c)')
-$section = $section.Replace(
-    'listener.m_disconnected',
-    'listener.shouldAbortSq4kouP1DiversityWorker(c)')
+foreach ($handler in $handlers) {
+    $text = Patch-Handler $text $handler
+}
 
-$text = $before + $section + $after
 [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($true))
 
 function Require-Text([string]$Path, [string]$Text) {
@@ -118,26 +133,31 @@ if ($bad) {
     throw 'Unresolved merge markers remain'
 }
 
-# Structural audit of PA3GHM asynchronous Diversity block.
-# TL2-4 contains exactly five ThreadPool workers: Sweep, FastSweep, AutoNull,
-# SmartNull and UltraNull. Their original disconnect/dispose control points
-# collapse to six guarded call sites after the P1 TX adaptation.
-$workerCount = ([regex]::Matches($section, 'System\.Threading\.ThreadPool\.QueueUserWorkItem\(_ =>')).Count
-$guardCount = ([regex]::Matches($section, 'shouldAbortSq4kouP1DiversityWorker\(c\)')).Count
-$legacyDisconnectCount = ([regex]::Matches($section, 'listener\.m_disconnected')).Count
+# Structural audit: each of the five PA3GHM asynchronous Diversity handlers must
+# contain exactly one ThreadPool worker, at least one P1-aware guard and no legacy
+# listener.m_disconnected checks. This avoids arbitrary global call-count thresholds.
+$finalText = [System.IO.File]::ReadAllText($tci)
+$totalGuards = 0
+foreach ($handler in $handlers) {
+    $section = Get-HandlerSection $finalText $handler
+    $workers = ([regex]::Matches($section, 'System\.Threading\.ThreadPool\.QueueUserWorkItem\(_ =>')).Count
+    $guards = ([regex]::Matches($section, 'shouldAbortSq4kouP1DiversityWorker\(c\)')).Count
+    $legacy = ([regex]::Matches($section, 'listener\.m_disconnected')).Count
 
-Write-Host "PA3GHM async Diversity workers: $workerCount"
-Write-Host "P1 Diversity worker guard call sites: $guardCount"
-Write-Host "Legacy listener.m_disconnected checks remaining in async block: $legacyDisconnectCount"
+    Write-Host "$handler : workers=$workers guards=$guards legacy_disconnect=$legacy"
 
-if ($workerCount -ne 5) {
-    throw "Unexpected PA3GHM async Diversity worker count: $workerCount (expected 5)"
-}
-if ($guardCount -lt 6) {
-    throw "Too few guarded PA3GHM worker control points: $guardCount (expected at least 6)"
-}
-if ($legacyDisconnectCount -ne 0) {
-    throw "Ungarded legacy disconnect checks remain in PA3GHM async Diversity block: $legacyDisconnectCount"
+    if ($workers -ne 1) {
+        throw "$handler has unexpected ThreadPool worker count: $workers (expected 1)"
+    }
+    if ($guards -lt 1) {
+        throw "$handler has no SQ4KOU P1 Diversity TX guard"
+    }
+    if ($legacy -ne 0) {
+        throw "$handler still has $legacy legacy listener.m_disconnected checks"
+    }
+    $totalGuards += $guards
 }
 
+Write-Host "PA3GHM async Diversity handlers verified: $($handlers.Count)"
+Write-Host "Total P1-aware worker control points: $totalGuards"
 Write-Host 'PA3GHM TL2-4 + SQ4KOU P1 finalization gates: PASS'
