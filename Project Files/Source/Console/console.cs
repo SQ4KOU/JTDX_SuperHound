@@ -31747,7 +31747,7 @@ namespace Thetis
                             // [ThetisLink TL2-1 2026-05-14]: smooth-scroll-LEFT — SKIP only when extensions on AND an active
                             // TL-server has claimed recenter via `auto_recenter_owner_ex`. Without an owner Thetis falls back
                             // to upstream behaviour and keeps scrolling on its own (otherwise VFO pins at visible edge).
-                            if (!(ThetisLinkExtensionsEnabled && ThetisLinkRecenterOwnerActive) && !bLimitToSpectral && (((-rx1_osc) - Lmargin) < Ldisp)) // scroll the spectrum display smoothly at the edge and keep going
+                            if (NativeAutoRecenterEnabled && !(ThetisLinkExtensionsEnabled && ThetisLinkRecenterOwnerActive) && !bLimitToSpectral && (((-rx1_osc) - Lmargin) < Ldisp)) // scroll the spectrum display smoothly at the edge and keep going
                             {
                                 double adjustFreq = Ldisp - ((-rx1_osc) - Lmargin);
                                 CentreFrequency -= adjustFreq * 1e-6;
@@ -31755,7 +31755,7 @@ namespace Thetis
                             }
                             else
                             // [ThetisLink TL2-1 2026-05-14]: smooth-scroll-RIGHT — same gate as LEFT.
-                            if (!(ThetisLinkExtensionsEnabled && ThetisLinkRecenterOwnerActive) && !bLimitToSpectral && (((-rx1_osc) + Hmargin) > Hdisp))
+                            if (NativeAutoRecenterEnabled && !(ThetisLinkExtensionsEnabled && ThetisLinkRecenterOwnerActive) && !bLimitToSpectral && (((-rx1_osc) + Hmargin) > Hdisp))
                             {
                                 double adjustFreq = ((-rx1_osc) + Hmargin) - Hdisp;
                                 CentreFrequency += adjustFreq * 1e-6;
@@ -32760,14 +32760,14 @@ namespace Thetis
                                 }
                                 else  // not a jump - more like tuning
                                 // [ThetisLink TL2-1 2026-05-14]: smooth-scroll-LEFT — gated on owner-handshake (see RX1 path).
-                                if (!(ThetisLinkExtensionsEnabled && ThetisLinkRecenterOwnerActive) && !bLimitToSpectral && (((-rx2_osc) - Lmargin) < Ldisp)) // scroll the spectrum display smoothly at the edge and keep going
+                                if (NativeAutoRecenterEnabled && !(ThetisLinkExtensionsEnabled && ThetisLinkRecenterOwnerActive) && !bLimitToSpectral && (((-rx2_osc) - Lmargin) < Ldisp)) // scroll the spectrum display smoothly at the edge and keep going
                                 {
                                     double adjustFreq = Ldisp - ((-rx2_osc) - Lmargin);
                                     CentreRX2Frequency -= adjustFreq * 1.0e-6;
                                     rx2_osc -= adjustFreq;
                                 }
                                 // [ThetisLink TL2-1 2026-05-14]: smooth-scroll-RIGHT — gated on owner-handshake.
-                                else if (!(ThetisLinkExtensionsEnabled && ThetisLinkRecenterOwnerActive) && !bLimitToSpectral && (((-rx2_osc) + Hmargin) > Hdisp))
+                                else if (NativeAutoRecenterEnabled && !(ThetisLinkExtensionsEnabled && ThetisLinkRecenterOwnerActive) && !bLimitToSpectral && (((-rx2_osc) + Hmargin) > Hdisp))
                                 {
                                     double adjustFreq = ((-rx2_osc) + Hmargin) - Hdisp;
                                     CentreRX2Frequency += adjustFreq * 1.0e-6;
