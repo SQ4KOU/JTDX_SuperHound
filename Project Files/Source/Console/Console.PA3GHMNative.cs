@@ -41,8 +41,9 @@ namespace Thetis
                 return;
             }
 
+            // The native CentreFrequency setter performs the same display/DDC update
+            // used elsewhere by Thetis when it recenters after a VFO jump.
             CentreFrequency = VFOAFreq;
-            rx1_osc = 0.0;
         }
 
         public void NativeRecenterRX2()
@@ -54,7 +55,6 @@ namespace Thetis
             }
 
             CentreRX2Frequency = VFOBFreq;
-            rx2_osc = 0.0;
         }
 
         public void NativeOpenDiversityControl()
