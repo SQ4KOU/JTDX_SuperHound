@@ -35,7 +35,13 @@ if (-not $div.Contains('NATIVE_PA3GHM_DIVERSITY_PANEL')) {
 $div = Read-Utf8 $divPath
 $latePattern = '            Common\.RestoreForm\(this, "DiversityForm", true\);\r?\n            // NATIVE_PA3GHM_DIVERSITY_PANEL\r?\n            InitPA3GHMNativePanel\(\);(?:\r?\n            EnsurePA3GHMNativePanelSize\(\);)?'
 if ([regex]::IsMatch($div, $latePattern)) {
-    $desired = "            // NATIVE_PA3GHM_DIVERSITY_PANEL`r`n            InitPA3GHMNativePanel();`r`n            Common.RestoreForm(this, \"DiversityForm\", true);`r`n            EnsurePA3GHMNativePanelSize();"
+    $desired = @'
+            // NATIVE_PA3GHM_DIVERSITY_PANEL
+            InitPA3GHMNativePanel();
+            Common.RestoreForm(this, "DiversityForm", true);
+            EnsurePA3GHMNativePanelSize();
+'@
+    $desired = $desired.TrimEnd("`r", "`n")
     $div = [regex]::Replace($div, $latePattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $desired }, 1)
     Write-Utf8Bom $divPath $div
 }
