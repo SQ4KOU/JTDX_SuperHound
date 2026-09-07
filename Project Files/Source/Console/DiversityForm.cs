@@ -191,9 +191,10 @@ namespace Thetis
             ////            trackBarPhase1.Visible = false;
             //chkLockR.Visible = true;
 
-            Common.RestoreForm(this, "DiversityForm", true);
             // NATIVE_PA3GHM_DIVERSITY_PANEL
             InitPA3GHMNativePanel();
+            Common.RestoreForm(this, "DiversityForm", true);
+            EnsurePA3GHMNativePanelSize();
 
             //[2.10.3.6]MW0LGE implement memories. A bit of a hack to store all this in a text box, but it is easy with the saveform/restoreform
             try
