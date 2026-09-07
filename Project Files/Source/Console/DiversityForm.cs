@@ -1,4 +1,4 @@
-//=================================================================
+ï»¿//=================================================================
 // DiversityForm.cs
 //=================================================================
 // PowerSDR is a C# implementation of a Software Defined Radio.
@@ -38,6 +38,14 @@
 // its original terms and is not affected by this dual-licensing statement in any way.        //
 // Richard Samphire can be reached by email at :  mw0lge@grange-lane.co.uk                    //
 //============================================================================================//
+//
+//================================================================================================//
+// SPDX-License-Identifier: GPL-2.0-or-later                                                       //
+// ThetisLink TL2-1 fork modifications by PA3GHM (cjenschede), starting 2026-05-07.                //
+// Adds a public DiversityGainMulti property so the TCI command `diversity_gain_multi_ex` can      //
+// read/write the form's `udGainMulti` value (which gates `udR1.Maximum` / `udR2.Maximum`).        //
+// See NOTICE.md and ATTRIBUTION.md in the repository root for fork details.                       //
+//================================================================================================//
 
 using System;
 using System.Diagnostics;
@@ -56,7 +64,7 @@ namespace Thetis
     /// <summary>
     /// Summary description for DiversityForm.
     /// </summary>
-    public class DiversityForm : System.Windows.Forms.Form
+    public partial class DiversityForm : System.Windows.Forms.Form
     {
         //private Point p = new Point(200, 200); //MW0LGE_21c
         //private const double m_SCALEFACTOR = 10.0; //MW0LGE_21f this now applied to udR1 and udR2
@@ -183,7 +191,10 @@ namespace Thetis
             ////            trackBarPhase1.Visible = false;
             //chkLockR.Visible = true;
 
+            // NATIVE_PA3GHM_DIVERSITY_PANEL
+            InitPA3GHMNativePanel();
             Common.RestoreForm(this, "DiversityForm", true);
+            EnsurePA3GHMNativePanelSize();
 
             //[2.10.3.6]MW0LGE implement memories. A bit of a hack to store all this in a text box, but it is easy with the saveform/restoreform
             try
@@ -1500,9 +1511,9 @@ namespace Thetis
             g.TextRenderingHint = TextRenderingHint.AntiAlias;
             // draw the background of the radar
             g.FillEllipse(new LinearGradientBrush(new Point((int)(size / 2), 0), new Point((int)(size / 2), size - 1), topColor, bottomColor), 0, 0, size - 1, size - 1);
-            // draw the outer ring (0° elevation)
+            // draw the outer ring (0ï¿½ elevation)
             g.DrawEllipse(pen, 0, 0, size - 1, size - 1);
-            // draw the inner ring (60° elevation)
+            // draw the inner ring (60ï¿½ elevation)
             int interval = size / 2;
             // draw the middle ring 
             g.DrawEllipse(pen, (size - interval) / 2, (size - interval) / 2, interval, interval);
@@ -1547,12 +1558,12 @@ namespace Thetis
             //g.TextRenderingHint = TextRenderingHint.AntiAlias;
             //// draw the background of the radar
             //g.FillEllipse(new LinearGradientBrush(new Point((int)(size / 2), 0), new Point((int)(size / 2), size - 1), topColor, bottomColor), 0, 0, size - 1, size - 1);
-            //// draw the outer ring (0° elevation)
+            //// draw the outer ring (0ï¿½ elevation)
             //g.DrawEllipse(pen, 0, 0, size - 1, size - 1);
-            //// draw the inner ring (60° elevation)
+            //// draw the inner ring (60ï¿½ elevation)
             ////int interval = size / 3;
             ////g.DrawEllipse(pen, (size - interval) / 2, (size - interval) / 2, interval, interval);
-            //// draw the middle ring (30° elevation)
+            //// draw the middle ring (30ï¿½ elevation)
             ////interval *= 2;
             ////g.DrawEllipse(pen, (size - interval) / 2, (size - interval) / 2, interval, interval);
             //int interval = size / 2;
@@ -2310,6 +2321,23 @@ namespace Thetis
             }
             get { return udR2.Value; }      // added 31/3/2018 G8NJJ to allow access by CAT commands
         }
+
+        // [ThetisLink TL2-1] BEGIN â€” modification by PA3GHM (cjenschede), 2026-05-07
+        // Public accessor for the GainMulti spinner so the TCI command `diversity_gain_multi_ex`
+        // can read/write it from outside the form. Range-clamps to the spinner's own
+        // Minimum / Maximum (1.0 .. 10.0). Writing triggers udGainMulti_ValueChanged which in
+        // turn updates udR1.Maximum / udR2.Maximum (= the gain-clamp).
+        public decimal DiversityGainMulti
+        {
+            get { return udGainMulti.Value; }
+            set
+            {
+                decimal v = Math.Min(value, udGainMulti.Maximum);
+                v = Math.Max(v, udGainMulti.Minimum);
+                udGainMulti.Value = v;
+            }
+        }
+        // [ThetisLink TL2-1] END
 
         public decimal DiversityPhase
         {

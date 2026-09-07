@@ -53,6 +53,14 @@
 // Nothing further added by him after this date, and his repo is now in archive https://github.com/ramdor/Thetis
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+//================================================================================================//
+// SPDX-License-Identifier: GPL-2.0-or-later                                                       //
+// ThetisLink TL2-1 fork modifications by PA3GHM (cjenschede), starting 2026-05-06.                //
+// All ThetisLink modifications are gated behind the "ThetisLink extensions" checkbox in           //
+// Setup > Network > IQ Stream. With the checkbox off, behavior is identical to upstream v2.10.3.15.//
+// See NOTICE.md and ATTRIBUTION.md in the repository root for fork details.                       //
+//================================================================================================//
+
 // Migrated to VS2026 - 18/12/25 MW0LGE v2.10.3.12
 
 using Midi2Cat.Data; //-W2PA Necessary for Behringer MIDI changes
@@ -11732,6 +11740,29 @@ namespace Thetis
             }
         }
 
+        // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-07
+        // Console-level proxy for DiversityForm.DiversityGainMulti so the TCI handler in
+        // TCIServer.cs can read/write GainMulti via the standard consoleThreadSafe accessor.
+        // GainMulti gates udR1.Maximum / udR2.Maximum (= the per-RX gain clamp); without
+        // exposing this via TCI, remote clients are stuck at whatever value the user last
+        // saved through the Thetis UI.
+        public decimal CATDiversityGainMulti
+        {
+            get
+            {
+                if (diversityForm != null)
+                    return diversityForm.DiversityGainMulti;
+                else
+                    return 1.0m;
+            }
+            set
+            {
+                if (diversityForm != null)
+                    diversityForm.DiversityGainMulti = value;
+            }
+        }
+        // [ThetisLink TL2-1] END
+
         public bool CATDiversityEnable
         {
             get
@@ -11750,6 +11781,30 @@ namespace Thetis
                         diversityForm.DiversityEnabled = false;
             }
         }
+
+        // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-28
+        // Thread-safe accessor for the RXOnly ("Receive only") flag, used by the
+        // ThetisLink `rx_only_ex` TCI command so the remote can put Thetis in a
+        // preventive transmit-inhibit when the active Amplitec antenna position
+        // is RX-only. The fork stays "dumb" here — it just sets whatever the
+        // TL-server commands. The TL-server owns the snapshot/restore logic
+        // (only it knows the pre-takeover RXOnly state), so there is no
+        // fork-side auto-release. The RXOnly setter (~line 15396) touches UI
+        // controls (chkMOX/chkTUN/chk2TONE/chkVOX), so the set must be
+        // marshalled onto the UI thread — the TCI server calls this from a
+        // worker thread. The get reads the plain `_rx_only` bool (atomic-safe).
+        public bool CATRXOnly
+        {
+            get { return _rx_only; }
+            set
+            {
+                if (InvokeRequired)
+                    Invoke(new Action(() => RXOnly = value));
+                else
+                    RXOnly = value;
+            }
+        }
+        // [ThetisLink TL2-1] END
 
         public bool CATDiversityRXRefSource             // added G8NJJ
         {
@@ -15087,6 +15142,59 @@ namespace Thetis
             }
         }
 
+        // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-06
+        // Master switch for ThetisLink TL2-1 fork extensions. Default OFF → behaves
+        // identically to upstream v2.10.3.15. When ON, additional `_ex` TCI commands
+        // and push notifications become available to ThetisLink clients.
+        private bool thetislink_extensions_enabled = false;
+        public bool ThetisLinkExtensionsEnabled
+        {
+            get { return thetislink_extensions_enabled; }
+            set
+            {
+                bool prev = thetislink_extensions_enabled;
+                thetislink_extensions_enabled = value;
+                // [TL2-1 2026-05-14] If extensions are disabled, no client can be
+                // a valid recenter-owner anymore — clear the flag so smooth-scroll
+                // returns to upstream behaviour immediately.
+                if (!value) thetislink_recenter_owner_active = false;
+                // [TL2-1 2026-05-14] Push a fresh caps frame to all connected TCI
+                // listeners so the TL-server drops cached caps and stops driving
+                // _ex features (specifically: no more CTUN-recenter after the
+                // checkbox flips off). Skip if state didn't actually change.
+                if (prev != value)
+                {
+                    try { m_tcpTCIServer?.BroadcastCapsRefresh(); }
+                    catch { /* TCI server may not be up yet; safe to ignore */ }
+                    // [TL2-1 2026-05-14] When extensions transition OFF→ON we
+                    // also need to re-push the _ex initial-state values
+                    // (currently only S9Frequency) so the server's tracking
+                    // matches reality instead of staying on the IARU fallback.
+                    if (value)
+                    {
+                        try { m_tcpTCIServer?.BroadcastS9Frequency(_s9Frequency); }
+                        catch { /* best-effort */ }
+                    }
+                }
+            }
+        }
+        // [ThetisLink TL2-1] END
+
+        // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-14
+        // Set by TCPIPtciServer when a TCI client claims auto-recenter ownership via
+        // `auto_recenter_owner_ex:true;` (and cleared when the last owner releases or
+        // disconnects). The smooth-scroll-recenter guards in this file (RX1 ~31490+
+        // ~31499, RX2 ~32503+ ~32510) skip Thetis' own recenter ONLY when extensions
+        // are enabled AND an owner is active — otherwise Thetis falls back to its
+        // upstream smooth-scroll behaviour and remains usable standalone.
+        private bool thetislink_recenter_owner_active = false;
+        public bool ThetisLinkRecenterOwnerActive
+        {
+            get { return thetislink_recenter_owner_active; }
+            set { thetislink_recenter_owner_active = value; }
+        }
+        // [ThetisLink TL2-1] END
+
         private void UpdateTRXAnt()
         {
             if (chkRxAnt.Checked)
@@ -15435,6 +15543,11 @@ namespace Thetis
             get { return _rx_only; }
             set
             {
+                // [ThetisLink TL2-3] BEGIN — modification by PA3GHM (cjenschede), 2026-05-29
+                // Detect change so we can broadcast a TCI push-notify only on real
+                // transitions (UI-sync paths sometimes write the same value).
+                bool _tl_rx_only_changed = _rx_only != value;
+                // [ThetisLink TL2-3] END
                 _rx_only = value;
                 if (_rx1_dsp_mode != DSPMode.SPEC &&
                     _rx1_dsp_mode != DSPMode.DRM &&
@@ -15451,6 +15564,21 @@ namespace Thetis
                     if (SetupForm.RXOnly != _rx_only)
                         SetupForm.RXOnly = _rx_only;
                 }
+                // [ThetisLink TL2-3] BEGIN — modification by PA3GHM (cjenschede), 2026-05-29
+                // Push the new state to every connected TCI listener so external
+                // clients (ThetisLink server, other _ex-aware clients) see the
+                // transition in real time — including operator-driven toggles
+                // via Setup → 'Receive only'. Without this, the stock fork only
+                // echoed rx_only_ex on TCI-driven SET/GET, leaving clients with
+                // a stale cache for as long as the operator's manual toggle
+                // wasn't observed elsewhere. Self-gate on extensions is in
+                // PushRxOnlyEx; safe-ignore if the TCI server isn't up yet.
+                if (_tl_rx_only_changed)
+                {
+                    try { m_tcpTCIServer?.BroadcastRxOnly(_rx_only); }
+                    catch { /* best-effort */ }
+                }
+                // [ThetisLink TL2-3] END
             }
         }
 
@@ -31580,12 +31708,26 @@ namespace Thetis
                 double Hdisp = Convert.ToDouble(Display.RXDisplayHigh) - dispWidth * dispMargin;
                 double freqJumpThresh = 0.5e6;  // definition of jumping far, e.g. with memory recall - causes a re-centering
 
-                if (!m_bIgnoreLimitsForZTB) // MW0LGE_21k9
+                // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-08
+                // Surgical guard v2 (per owner-smoke-test diagnose 2026-05-08):
+                // de eerste versie skipte het hele auto-recenter blok bij vink-aan, maar
+                // dat brak A↔B-swap, memory-recall en band-switch — grote VFO-jumps
+                // werden niet door Thetis gerecenterd waardoor sample-area-clamp daaronder
+                // de VFO naar DDC-rand klemde (~92% half-bw = ~177 kHz drift per swap).
+                //
+                // Fix: outer guard terug naar !m_bIgnoreLimitsForZTB (zoals upstream);
+                // alleen de SMOOTH-SCROLL paden krijgen inner !ThetisLinkExtensionsEnabled.
+                // Jump-recenter (>0.5 MHz of buiten display) MOET doorlopen onder vink-aan
+                // zodat Thetis' eigen recenter de grote sprong opvangt; TL-server doet
+                // daarna de fijn-recenter via ZZCN-toggle voor doorlopende kleine tunes.
+                if (!m_bIgnoreLimitsForZTB) // MW0LGE_21k9 (TL2-1: outer guard restored)
+                // [ThetisLink TL2-1] END
                 {
                     if (!ClickTuneDrag)
                     {
                         if (((-rx1_osc) - Lmargin) < Ldisp || ((-rx1_osc) + Hmargin) > Hdisp) // re-center if we've jumped far
                         {
+                            // [TL2-1]: jump-recenter MOET doorlopen — A↔B/memory-recall/band-switch
                             CentreFrequency = freq;
                             rx1_osc = 0.0;
                         }
@@ -31597,18 +31739,23 @@ namespace Thetis
                             //-W2PA If we tune beyond the display limits, re-center or scroll display, and keep going.  Original code above just stops tuning at edges.
                             if (((-rx1_osc) - Lmargin) < (Ldisp - freqJumpThresh) || ((-rx1_osc) + Hmargin) > (Hdisp + freqJumpThresh)) // re-center if we've jumped far
                             {
+                                // [TL2-1]: jump-recenter (drag-pad) MOET doorlopen
                                 CentreFrequency = freq;
                                 rx1_osc = 0.0;
                             }
                             else  // not a jump - more like tuning
-                            if (!bLimitToSpectral && (((-rx1_osc) - Lmargin) < Ldisp)) // scroll the spectrum display smoothly at the edge and keep going
+                            // [ThetisLink TL2-1 2026-05-14]: smooth-scroll-LEFT — SKIP only when extensions on AND an active
+                            // TL-server has claimed recenter via `auto_recenter_owner_ex`. Without an owner Thetis falls back
+                            // to upstream behaviour and keeps scrolling on its own (otherwise VFO pins at visible edge).
+                            if (NativeAutoRecenterEnabled && !(ThetisLinkExtensionsEnabled && ThetisLinkRecenterOwnerActive) && !bLimitToSpectral && (((-rx1_osc) - Lmargin) < Ldisp)) // scroll the spectrum display smoothly at the edge and keep going
                             {
                                 double adjustFreq = Ldisp - ((-rx1_osc) - Lmargin);
                                 CentreFrequency -= adjustFreq * 1e-6;
                                 rx1_osc -= adjustFreq;
                             }
                             else
-                            if (!bLimitToSpectral && (((-rx1_osc) + Hmargin) > Hdisp))
+                            // [ThetisLink TL2-1 2026-05-14]: smooth-scroll-RIGHT — same gate as LEFT.
+                            if (NativeAutoRecenterEnabled && !(ThetisLinkExtensionsEnabled && ThetisLinkRecenterOwnerActive) && !bLimitToSpectral && (((-rx1_osc) + Hmargin) > Hdisp))
                             {
                                 double adjustFreq = ((-rx1_osc) + Hmargin) - Hdisp;
                                 CentreFrequency += adjustFreq * 1e-6;
@@ -31668,7 +31815,14 @@ namespace Thetis
             }
             else
             {
+                // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-08
+                // Surgical guard v2: high-zoom fallback un-guarded — dit is een jump-style
+                // recenter (filter is off-view bij hoge zoom), dezelfde semantiek als A↔B
+                // swap. Vink-aan gedrag: laat Thetis recenteren; TL-server doet daarna
+                // verfijning. Eerdere vink-aan-skip van deze fallback liet filter buiten
+                // visible window staan = onbruikbaar voor owner.
                 if (!bCanFitInView && _click_tune_display && !rx1_spectrum_tune_drag)
+                // [ThetisLink TL2-1] END
                 {
                     // if filter is off the edge of view, most likey because of high zoom
                     CentreFrequency = freq;
@@ -32575,13 +32729,20 @@ namespace Thetis
                     double Hdisp = Convert.ToDouble(Display.RX2DisplayHigh) - dispWidth * dispMargin;
                     double freqJumpThresh = 0.5e6;  // Definition of jumping far, e.g. with memory recall - causes a re-centering
 
-                    if (!m_bIgnoreLimitsForZTB) // MW0LGE_21k9
+                    // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-08
+                    // Surgical guard v2 voor RX2 — symmetrisch aan RX1. Per
+                    // owner-smoke-test diagnose 2026-05-08: outer guard terug naar
+                    // upstream; alleen smooth-scroll paden krijgen !ThetisLinkExtensionsEnabled.
+                    // Jump-recenter (A↔B/memory-recall/band-switch) MOET doorlopen.
+                    if (!m_bIgnoreLimitsForZTB) // MW0LGE_21k9 (TL2-1: outer guard restored)
+                    // [ThetisLink TL2-1] END
                     {
                         if (!ClickTuneDrag)
                         {
                             //-W2PA Original 3.4.1 code
                             if (((-rx2_osc) - Lmargin) < Ldisp || ((-rx2_osc) + Hmargin) > Hdisp) // re-center if we've jumped far
                             {
+                                // [TL2-1]: jump-recenter MOET doorlopen
                                 CentreRX2Frequency = freq;
                                 rx2_osc = 0.0;
                             }
@@ -32593,17 +32754,20 @@ namespace Thetis
                                 //-W2PA If we tune beyond the display limits, re-center or scroll display, and keep going.  Original code above just stops tuning at edges.
                                 if (((-rx2_osc) - Lmargin) < (Ldisp - freqJumpThresh) || ((-rx2_osc) + Hmargin) > (Hdisp + freqJumpThresh)) // re-center if we've jumped far
                                 {
+                                    // [TL2-1]: jump-recenter (drag-pad) MOET doorlopen
                                     CentreRX2Frequency = freq;
                                     rx2_osc = 0.0;
                                 }
                                 else  // not a jump - more like tuning
-                                if (!bLimitToSpectral && (((-rx2_osc) - Lmargin) < Ldisp)) // scroll the spectrum display smoothly at the edge and keep going
+                                // [ThetisLink TL2-1 2026-05-14]: smooth-scroll-LEFT — gated on owner-handshake (see RX1 path).
+                                if (NativeAutoRecenterEnabled && !(ThetisLinkExtensionsEnabled && ThetisLinkRecenterOwnerActive) && !bLimitToSpectral && (((-rx2_osc) - Lmargin) < Ldisp)) // scroll the spectrum display smoothly at the edge and keep going
                                 {
                                     double adjustFreq = Ldisp - ((-rx2_osc) - Lmargin);
                                     CentreRX2Frequency -= adjustFreq * 1.0e-6;
                                     rx2_osc -= adjustFreq;
                                 }
-                                else if (!bLimitToSpectral && (((-rx2_osc) + Hmargin) > Hdisp))
+                                // [ThetisLink TL2-1 2026-05-14]: smooth-scroll-RIGHT — gated on owner-handshake.
+                                else if (NativeAutoRecenterEnabled && !(ThetisLinkExtensionsEnabled && ThetisLinkRecenterOwnerActive) && !bLimitToSpectral && (((-rx2_osc) + Hmargin) > Hdisp))
                                 {
                                     double adjustFreq = ((-rx2_osc) + Hmargin) - Hdisp;
                                     CentreRX2Frequency += adjustFreq * 1.0e-6;
@@ -32662,7 +32826,12 @@ namespace Thetis
                 }
                 else
                 {
+                    // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-08
+                    // Surgical guard v2: high-zoom RX2 fallback un-guarded — symmetrisch
+                    // aan RX1. Jump-style recenter (filter off-view) moet doorlopen, anders
+                    // staat filter buiten visible window.
                     if (!bCanFitInView && _click_tune_rx2_display && !rx2_spectrum_tune_drag)
+                    // [ThetisLink TL2-1] END
                     {
                         // if filter is off the edge of view, most likey because of high zoom
                         CentreRX2Frequency = freq;
@@ -48280,6 +48449,11 @@ namespace Thetis
             set {
                 _s9Frequency = value;
                 MeterManager.UpdateS9(_s9Frequency);
+                // [ThetisLink TL2-1 2026-05-14] Push the new threshold to any
+                // connected TL-server so its S-meter band-shift updates in
+                // sync with the Multimeter widget on the next sensor tick.
+                try { m_tcpTCIServer?.BroadcastS9Frequency(_s9Frequency); }
+                catch { /* TCI server not running yet — initial-state push will cover it */ }
             }
         }
         #region AutoStartCode

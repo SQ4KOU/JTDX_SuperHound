@@ -42,6 +42,14 @@
 // its original terms and is not affected by this dual-licensing statement in any way.        //
 // Richard Samphire can be reached by email at :  mw0lge@grange-lane.co.uk                    //
 //============================================================================================//
+//
+//================================================================================================//
+// SPDX-License-Identifier: GPL-2.0-or-later                                                       //
+// ThetisLink TL2-1 fork modifications by PA3GHM (cjenschede), starting 2026-05-06.                //
+// All ThetisLink modifications are gated behind the "ThetisLink extensions" checkbox in           //
+// Setup > Network > IQ Stream. With the checkbox off, behavior is identical to upstream v2.10.3.15.//
+// See NOTICE.md and ATTRIBUTION.md in the repository root for fork details.                       //
+//================================================================================================//
 
 using System.Collections.Generic;
 using System.Linq;
@@ -146,6 +154,8 @@ namespace Thetis
             Size = MinimumSize;
 
             console = c;
+            // NATIVE_PA3GHM_SETUP_CONTROLS
+            InitPA3GHMNativeSetupControls();
             this.Owner = c;
 
             _frmBandwidth = new frmBandwidth();
@@ -13280,6 +13290,16 @@ namespace Thetis
 
             panelAlexRXAntControl.Enabled = true;
         }
+
+        // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-06
+        // Handler for the "ThetisLink extensions" checkbox in Setup > Network > IQ Stream.
+        // Mirrors the checkbox state into Console.ThetisLinkExtensionsEnabled, which gates
+        // all `_ex` TCI commands and push notifications added by this fork.
+        private void chkThetisLinkExtensions_CheckedChanged(object sender, System.EventArgs e)
+        {
+            console.ThetisLinkExtensionsEnabled = chkThetisLinkExtensions.Checked;
+        }
+        // [ThetisLink TL2-1] END
 
         private void chkMercDither_CheckedChanged(object sender, System.EventArgs e)
         {

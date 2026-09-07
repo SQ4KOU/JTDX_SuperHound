@@ -37,6 +37,15 @@ mw0lge@grange-lane.co.uk
 // its original terms and is not affected by this dual-licensing statement in any way.        //
 // Richard Samphire can be reached by email at :  mw0lge@grange-lane.co.uk                    //
 //============================================================================================//
+//
+//================================================================================================//
+// SPDX-License-Identifier: GPL-2.0-or-later                                                       //
+// ThetisLink TL2-1 fork modifications by PA3GHM (cjenschede), starting 2026-05-06.                //
+// Placeholder only — TL-only `_ex` commands are added in opvolger-patches and gated behind        //
+// `Console.ThetisLinkExtensionsEnabled` (Setup > Network > IQ Stream > "ThetisLink extensions").  //
+// With the checkbox off, this file behaves identical to upstream v2.10.3.15.                      //
+// See NOTICE.md and ATTRIBUTION.md in the repository root for fork details.                       //
+//================================================================================================//
 
 
 // info from
@@ -786,6 +795,15 @@ namespace Thetis
         private bool m_tciPttActive = false;
         private int m_txQueuedComplexSamples = 0;
         private bool m_seenModernTxAudioNegotiation = false;
+        // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-14
+        // Per-client auto-recenter ownership flag. Set when this listener has sent
+        // `auto_recenter_owner_ex:1;`. Used so the server can release the global
+        // recenter-owner refcount on socket disconnect without leaking ownership
+        // when the TL server crashes / network drops without a graceful `:0;`.
+        private bool m_isRecenterOwner = false;
+        public bool IsRecenterOwner { get { return m_isRecenterOwner; } }
+        public void SetRecenterOwnerFlag(bool v) { m_isRecenterOwner = v; }
+        // [ThetisLink TL2-1] END
         private readonly clsTCISensorManager m_sensorManager = new clsTCISensorManager();
         private System.Threading.Timer m_tmRxSensors;
         private System.Threading.Timer m_tmTxSensors;
@@ -870,6 +888,21 @@ namespace Thetis
 
             //sendIFLimits(-halfSample, halfSample);
             sendIFLimits(-halfSample, halfSample); // sadly this is global in tci, so use rx1
+
+            // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-07
+            // Stock TCI exposes only one global iq_samplerate (= max of both RX). The server
+            // parser writes both rx fields equal from that frame, which clobbers the unchanged
+            // RX's actual rate when RX1 and RX2 differ. Fix: emit per-RX ddc_sample_rate_ex
+            // for BOTH receivers (changed AND unchanged), so the parser's sequential apply
+            // converges to the correct per-RX state regardless of frame order.
+            // Direct _console read (no Invoke wrapper) — required to stay deadlock-safe in
+            // case this gets called from a non-UI thread during cmaster reconfigure.
+            if (_console != null && _console.ThetisLinkExtensionsEnabled)
+            {
+                sendTextFrame("ddc_sample_rate_ex:0," + _console.SampleRateRX1 + ";");
+                sendTextFrame("ddc_sample_rate_ex:1," + _console.SampleRateRX2 + ";");
+            }
+            // [ThetisLink TL2-1] END
         }
 
         internal bool RequiresRxSensorUpdate(int receiver, int channel)
@@ -939,7 +972,15 @@ namespace Thetis
                     maxRate = m_hwSampleRate[i];
             }
 
-            return Math.Min(maxRate, 384000);
+            // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-07
+            // Stock cap of 384 kHz was chosen for typical TCI-client bandwidth budgets.
+            // TL2-1 clients support up to 1536 kHz hardware DDC rate; allow it when
+            // ThetisLink-extensions is on. Vink UIT keeps the stock 384 kHz cap.
+            // Direct _console read (no Invoke wrapper) — atomic bool, safe from any
+            // thread, avoids deadlock with UI-thread DSP-pipeline reconfigure.
+            int cap = (_console != null && _console.ThetisLinkExtensionsEnabled) ? 1536000 : 384000;
+            return Math.Min(maxRate, cap);
+            // [ThetisLink TL2-1] END
         }
 
         private unsafe void destroyRxAudioResamplerState(TCIRxAudioResamplerState state)
@@ -1496,6 +1537,9 @@ namespace Thetis
         {
 			if (m_disconnected) return;
 			sendFilterBand(rx-1, low, high);
+			// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-06
+			sendRxFilterPresetEx(rx-1, (int)newFilter);
+			// [ThetisLink TL2-1] END
 		}
 		public void FilterEdgesChange(int rx, Filter filter, Band band, int low, int high)
 		{
@@ -2568,6 +2612,33 @@ namespace Thetis
 			string s = "rx_filter_band:" + rx.ToString() + "," + low.ToString() + "," + high.ToString() + ";";
 			sendTextFrame(s);
 		}
+
+		// [ThetisLink TL2-4] BEGIN — modification by PA3GHM (cjenschede), 2026-06-03
+		// Listener-side wrapper for the parent TCPIPtciServer.BroadcastFilterBand
+		// fan-out. Called after a TCI-driven mode-switch so that ALL connected
+		// TCI clients receive the new rx_filter_band — not just the listener that
+		// processed the inbound MODULATION command. rx is 0-based (0=RX1, 1=RX2)
+		// per existing sendFilterBand convention. Honors m_disconnected so a
+		// closing socket cannot block the broadcaster.
+		public void PushFilterBand(int rx, int low, int high)
+		{
+			if (m_disconnected) return;
+			sendFilterBand(rx, low, high);
+		}
+		// [ThetisLink TL2-4] END
+
+		// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-06
+		// Push for filter-preset index (Filter enum value F1..VAR2) — fork-only, complements
+		// stock `rx_filter_band` (which only carries low/high cut Hz, not the preset slot index).
+		// Format: `rx_filter_preset_ex:rx,index;` (rx 0=RX1, 1=RX2; index is (int)Filter value).
+		private void sendRxFilterPresetEx(int rx, int presetIndex)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled)
+				return;
+			string s = "rx_filter_preset_ex:" + rx.ToString() + "," + presetIndex.ToString() + ";";
+			sendTextFrame(s);
+		}
+		// [ThetisLink TL2-1] END
         private void normalizeTXFilterBandForSet(ref int low, ref int high)
         {
             low = Math.Max(0, low);
@@ -2829,6 +2900,1249 @@ namespace Thetis
 			Debug.Print("SENT INITIAL STATE");
 		}
 
+		// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-06; 2026-05-14
+		// Capability-broadcast for TL2-1 fork. Always emits a `tci_caps_ex:...;` frame
+		// when extensions are enabled, and an empty `tci_caps_ex:;` frame when they
+		// are disabled — that empty frame is the signal a connected client uses to
+		// drop its cached caps and stop driving the _ex feature surface (e.g. the
+		// TL-server's CTUN auto-recenter). Without this empty-frame the server keeps
+		// using cached caps from the moment-of-connect and goes on touching CTUN
+		// even after the user has switched extensions off in Thetis.
+		// Called on (1) connect, (2) client query of "tci_caps_ex;" without args, and
+		// (3) `ThetisLinkExtensionsEnabled` toggle via BroadcastCapsRefresh().
+		public void SendCapabilitiesFrame()
+		{
+			if (consoleThreadSafe == null)
+				return;
+
+			if (!consoleThreadSafe.ThetisLinkExtensionsEnabled)
+			{
+				sendTextFrame("tci_caps_ex:;");
+				return;
+			}
+
+			var caps = new System.Collections.Generic.List<string>();
+			caps.Add("rx_filter_preset_ex");
+			caps.Add("diversity_enable_ex");
+			caps.Add("diversity_source_ex");
+			caps.Add("diversity_ref_ex");
+			caps.Add("diversity_phase_ex");
+			caps.Add("diversity_gain_ex");
+			caps.Add("diversity_gain_multi_ex");
+			caps.Add("diversity_sweep_ex");
+			caps.Add("diversity_fastsweep_ex");
+			caps.Add("diversity_autonull_ex");
+			caps.Add("diversity_smartnull_ex");
+			caps.Add("diversity_ultranull_ex");
+			caps.Add("ddc_sample_rate_ex");
+			// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-07; comment-update 2026-05-08
+			// Advertise-only cap: signals that Thetis' own re-center smooth-scroll
+			// logic in console.cs (RX1 ~31470-31503, RX2 ~32487-32536) is disabled
+			// while ThetisLinkExtensionsEnabled is true (jump-recenter blijft actief).
+			// The TL-server takes ownership of recenter via ZZCN/ZZCO toggle —
+			// ZZCN voor RX1, ZZCO voor RX2 (NIET ZZCP, dat is compander).
+			// There is NO `auto_recenter_ex:` TCI command handler — server gates the
+			// feature on `has_cap("auto_recenter_ex")`.
+			caps.Add("auto_recenter_ex");
+			// [ThetisLink TL2-1] END
+			// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-14
+			// Handshake cap: tells TL-server that this Thetis supports the
+			// `auto_recenter_owner_ex:true|false;` claim/release command. Without
+			// the handshake, smooth-scroll-recenter stays enabled and Thetis can
+			// keep tuning on its own when no server is connected.
+			caps.Add("auto_recenter_owner_ex");
+			// [ThetisLink TL2-1] END
+			// [ThetisLink TL2-1 2026-05-14] S9 frequency threshold push.
+			caps.Add("s9_frequency_ex");
+			// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-28
+			// Preventive transmit-inhibit. Lets the TL-server set Thetis' "Receive
+			// only" flag remotely so MOX/spacebar/hardware-PTT/VOX are all refused
+			// (not just reactively flipped back) when the active Amplitec antenna
+			// position is RX-only.
+			caps.Add("rx_only_ex");
+			// [ThetisLink TL2-1] END
+
+			sendTextFrame("tci_caps_ex:" + string.Join(",", caps) + ";");
+		}
+
+		// Initial-state burst for TL2-1 fork-only `_ex` properties. Sent during connect
+		// AFTER sendCapabilities() so clients first see what the server supports, then the
+		// current state of those `_ex` features. Self-gates via the same checkbox; vink UIT
+		// means no extra frames in the init-burst.
+		private void sendInitialThetisLinkState()
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled)
+				return;
+
+			sendRxFilterPresetEx(0, (int)consoleThreadSafe.RX1Filter);
+			sendRxFilterPresetEx(1, (int)consoleThreadSafe.RX2Filter);
+
+			// Per-RX DDC sample rate — the global `iq_samplerate` only carries max(rx1,rx2),
+			// so clients need the per-RX values to keep both displays accurate.
+			sendTextFrame("ddc_sample_rate_ex:0," + consoleThreadSafe.SampleRateRX1 + ";");
+			sendTextFrame("ddc_sample_rate_ex:1," + consoleThreadSafe.SampleRateRX2 + ";");
+
+			// Diversity initial state — empty-args invocation triggers GET-mode response in each handler.
+			handleDiversityEnableEx(new string[] { "" });
+			handleDiversitySourceEx(new string[] { "" });
+			handleDiversityRefEx(new string[] { "" });
+			handleDiversityPhaseEx(new string[] { "" });
+			handleDiversityGainMultiEx(new string[] { "" });
+			// Gain push is per-RX; emit both
+			handleDiversityGainEx(new string[] { "0" });
+			handleDiversityGainEx(new string[] { "1" });
+			// [ThetisLink TL2-1 2026-05-14] S9 frequency threshold (MHz). User-
+			// configurable in Setup; default 30 MHz. Above this VFO frequency the
+			// S-meter scale uses S9 = -93 dBm instead of -73 dBm (IARU Region 1
+			// VHF/UHF convention). The TL-server needs this value to render the
+			// client S-meter consistently with Thetis' own Multimeter widget.
+			sendS9FrequencyEx(consoleThreadSafe.S9Frequency);
+		}
+
+		// Lazy-init for the DiversityForm. CAT diversity properties on Console proxy to
+		// diversityForm fields, so the form must exist before any diversity SET succeeds.
+		// Form creation must run on the UI thread.
+		private void ensureDiversityForm()
+		{
+			if (_console == null) return;
+			if (_console.diversityForm == null || _console.diversityForm.IsDisposed)
+			{
+				_console.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+				{
+					if (_console.diversityForm == null || _console.diversityForm.IsDisposed)
+						_console.diversityForm = new DiversityForm(_console);
+				}));
+			}
+		}
+
+		// diversity_enable_ex:true|false;  (GET when payload empty; SET emits confirmation frame)
+		private void handleDiversityEnableEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			if (args == null || args.Length != 1) return;
+			ensureDiversityForm();
+
+			if (args[0].Trim() != "")
+			{
+				if (!bool.TryParse(args[0], out bool enabled)) return;
+				consoleThreadSafe.CATDiversityEnable = enabled;
+			}
+			// Always echo current state (covers both GET and post-SET confirmation).
+			sendTextFrame("diversity_enable_ex:" + consoleThreadSafe.CATDiversityEnable.ToString().ToLower() + ";");
+		}
+
+		// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-28
+		// rx_only_ex:true|false;  Preventive transmit-inhibit via Thetis' built-in
+		// "Receive only" flag. SET drives console.RXOnly (marshalled to the UI
+		// thread by CATRXOnly), which refuses MOX/spacebar/hardware-PTT/VOX at
+		// the central chokepoint instead of reactively flipping back. GET (empty
+		// payload) and post-SET both echo the current state. Self-gates on the
+		// ThetisLink-extensions checkbox; vink UIT = no-op.
+		private void handleRxOnlyEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			if (args == null || args.Length != 1) return;
+
+			if (args[0].Trim() != "")
+			{
+				if (!bool.TryParse(args[0], out bool enabled)) return;
+				consoleThreadSafe.CATRXOnly = enabled;
+			}
+			sendTextFrame("rx_only_ex:" + consoleThreadSafe.CATRXOnly.ToString().ToLower() + ";");
+		}
+		// [ThetisLink TL2-1] END
+
+		// diversity_source_ex:N;  Valid: 0=RX1+RX2 combined, 1=RX1, 2=RX2.  GET when payload empty.
+		private void handleDiversitySourceEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			if (args == null || args.Length != 1) return;
+			ensureDiversityForm();
+
+			if (args[0].Trim() != "")
+			{
+				if (!int.TryParse(args[0], out int source)) return;
+				if (source < 0 || source > 2) return;
+				consoleThreadSafe.CATDiversityRXSource = source;
+			}
+			sendTextFrame("diversity_source_ex:" + consoleThreadSafe.CATDiversityRXSource + ";");
+		}
+
+		// diversity_ref_ex:true|false;  (true = RX1 ref, false = RX2 ref). GET when empty.
+		private void handleDiversityRefEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			if (args == null || args.Length != 1) return;
+			ensureDiversityForm();
+
+			if (args[0].Trim() != "")
+			{
+				if (!bool.TryParse(args[0], out bool refRx1)) return;
+				consoleThreadSafe.CATDiversityRXRefSource = refRx1;
+			}
+			sendTextFrame("diversity_ref_ex:" + consoleThreadSafe.CATDiversityRXRefSource.ToString().ToLower() + ";");
+		}
+
+		// diversity_phase_ex:N;  N is integer in 0.01° units, range -18000..+18000. GET when empty.
+		private void handleDiversityPhaseEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			if (args == null || args.Length != 1) return;
+			ensureDiversityForm();
+
+			if (args[0].Trim() != "")
+			{
+				if (!int.TryParse(args[0], out int phaseInt)) return;
+				phaseInt = Math.Max(-18000, Math.Min(18000, phaseInt));
+				consoleThreadSafe.CATDiversityPhase = phaseInt / 100m;
+			}
+			decimal phase = consoleThreadSafe.CATDiversityPhase;
+			sendTextFrame("diversity_phase_ex:" + ((int)(phase * 100m)) + ";");
+		}
+
+		// diversity_gain_multi_ex:N;  N is integer × 100 (range 100..1000 = 1.00..10.00). GET when empty.
+		// GainMulti is a multiplier in DiversityForm that gates udR1.Maximum / udR2.Maximum, i.e. the
+		// upper bound on per-RX diversity gain. Without this command remote clients can't push gain
+		// above whatever value GainMulti was last saved at via the Thetis UI.
+		private void handleDiversityGainMultiEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			if (args == null || args.Length != 1) return;
+			ensureDiversityForm();
+
+			if (args[0].Trim() != "")
+			{
+				if (!int.TryParse(args[0], out int multiInt)) return;
+				multiInt = Math.Max(100, Math.Min(1000, multiInt));
+				consoleThreadSafe.CATDiversityGainMulti = multiInt / 100m;
+			}
+			decimal multi = consoleThreadSafe.CATDiversityGainMulti;
+			sendTextFrame("diversity_gain_multi_ex:" + ((int)(multi * 100m)) + ";");
+		}
+
+		// diversity_gain_ex:rx,gainint;  rx is 0|1, gainint is gain * 1000 (0..10000). GET via rx-only.
+		private void handleDiversityGainEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			if (args == null || args.Length < 1 || args.Length > 2) return;
+			if (!int.TryParse(args[0], out int rx)) return;
+			if (rx < 0 || rx > 1) return;
+			ensureDiversityForm();
+
+			if (args.Length == 2)
+			{
+				if (!int.TryParse(args[1], out int gainInt)) return;
+				gainInt = Math.Max(0, Math.Min(10000, gainInt));
+				decimal gainSet = gainInt / 1000m;
+				if (rx == 0) consoleThreadSafe.CATDiversityRX1Gain = gainSet;
+				else consoleThreadSafe.CATDiversityRX2Gain = gainSet;
+			}
+			decimal gain = rx == 0 ? consoleThreadSafe.CATDiversityRX1Gain
+			                       : consoleThreadSafe.CATDiversityRX2Gain;
+			sendTextFrame("diversity_gain_ex:" + rx + "," + ((int)(gain * 1000m)) + ";");
+		}
+
+		// SQ4KOU_P1_DIVERSITY_WORKER_TX_GUARD
+		// PA3GHM null/sweep workers run asynchronously. In Protocol 1 our
+		// cmaster TX gate deliberately stops EXTDIV for MOX. Do not let a
+		// background worker keep changing phase/gain while that gate is active.
+		// Protocol 2 and normal RX behaviour are unchanged.
+		private bool shouldAbortSq4kouP1DiversityWorker(Console c)
+		{
+			if (m_disconnected || c == null || c.IsDisposed) return true;
+			if (NetworkIO.CurrentRadioProtocol != RadioProtocol.USB) return false;
+
+			try
+			{
+				if (c.InvokeRequired)
+					return (bool)c.Invoke(new Func<bool>(() => c.MOX || c.TUN));
+
+				return c.MOX || c.TUN;
+			}
+			catch
+			{
+				// Fail safe: an invalid UI state must never let the P1 worker
+				// alter Diversity during a possible TX transition.
+				return true;
+			}
+		}
+		// diversity_sweep_ex:type,start,end,step,settleMs;  type is "phase" or "gain".
+		// Result frame: diversity_sweep_result_ex:type,val1:rssi1,val2:rssi2,...;
+		// Inner-tuple separator stays `:` for TL-server compatibility (sdr-remote tci_parser.rs:563).
+		private void handleDiversitySweepEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			if (args == null || args.Length < 5) return;
+			string sweepType = args[0].Trim().ToLower();
+			if (sweepType != "phase" && sweepType != "gain") return;
+			var ic = System.Globalization.CultureInfo.InvariantCulture;
+			if (!float.TryParse(args[1], System.Globalization.NumberStyles.Float, ic, out float start)) return;
+			if (!float.TryParse(args[2], System.Globalization.NumberStyles.Float, ic, out float end)) return;
+			if (!float.TryParse(args[3], System.Globalization.NumberStyles.Float, ic, out float step)) return;
+			if (!int.TryParse(args[4], out int settleMs)) return;
+			if (step <= 0 || settleMs < 5 || settleMs > 500) return;
+
+			bool isPhase = sweepType == "phase";
+			ensureDiversityForm();
+
+			var listener = this;
+			var c = _console;
+			System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+			{
+				try
+				{
+					var results = new System.Collections.Generic.List<string>();
+					float val = start;
+					int safety = 0;
+					while (val <= end && safety++ < 720)
+					{
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						float currentVal = val;
+						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+						{
+							if (isPhase)
+							{
+								c.CATDiversityPhase = (decimal)currentVal;
+							}
+							else
+							{
+								// Gain input is dB offset; convert to linear factor in 0.01..10 range
+								decimal gain = (decimal)Math.Pow(10.0, currentVal / 20.0);
+								gain = Math.Max(0.01m, Math.Min(10m, gain));
+								if (c.diversityForm != null)
+								{
+									if (c.CATDiversityRXRefSource)
+										c.diversityForm.DiversityR2Gain = gain;
+									else
+										c.diversityForm.DiversityGain = gain;
+								}
+							}
+						}));
+
+						System.Threading.Thread.Sleep(settleMs);
+
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						float dbm = -200f;
+						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+						{
+							dbm = WDSP.CalculateRXMeter(0, 0, WDSP.MeterType.SIGNAL_STRENGTH);
+						}));
+
+						results.Add(currentVal.ToString("F1", ic) + ":" + dbm.ToString("F1", ic));
+						val += step;
+					}
+
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+						listener.sendTextFrame("diversity_sweep_result_ex:" + sweepType + "," + string.Join(",", results) + ";");
+				}
+				catch (Exception ex)
+				{
+					System.Diagnostics.Debug.Print("Diversity sweep error: " + ex.Message);
+				}
+			});
+		}
+
+		// diversity_fastsweep_ex:type,start,end,step[,settleMs[,meterMode]];
+		// Sends two result frames: fwd_<type> then bwd_<type>.
+		// Triple format: t:val:rssi  (`:` inner separator for TL-server compat per §6 decision-log).
+		private void handleDiversityFastsweepEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			if (args == null || args.Length < 4) return;
+			string sweepType = args[0].Trim().ToLower();
+			if (sweepType != "phase" && sweepType != "gain") return;
+			var ic = System.Globalization.CultureInfo.InvariantCulture;
+			if (!float.TryParse(args[1], System.Globalization.NumberStyles.Float, ic, out float start)) return;
+			if (!float.TryParse(args[2], System.Globalization.NumberStyles.Float, ic, out float end)) return;
+			if (!float.TryParse(args[3], System.Globalization.NumberStyles.Float, ic, out float step)) return;
+			if (step <= 0) return;
+			int settleMs = 0;
+			if (args.Length >= 5) int.TryParse(args[4], out settleMs);
+			settleMs = Math.Max(0, Math.Min(1000, settleMs));
+			int meterMode = 0;
+			if (args.Length >= 6) int.TryParse(args[5], out meterMode);
+			var meterType = meterMode == 1 ? WDSP.MeterType.AVG_SIGNAL_STRENGTH : WDSP.MeterType.SIGNAL_STRENGTH;
+
+			bool isPhase = sweepType == "phase";
+			ensureDiversityForm();
+
+			var listener = this;
+			var c = _console;
+			System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+			{
+				try
+				{
+					var sw = System.Diagnostics.Stopwatch.StartNew();
+
+					Func<float, System.Collections.Generic.List<string>, bool> doStep = (currentVal, resultList) =>
+					{
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return false;
+						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+						{
+							if (isPhase)
+							{
+								float phase = currentVal;
+								while (phase > 180f) phase -= 360f;
+								while (phase < -180f) phase += 360f;
+								c.CATDiversityPhase = (decimal)phase;
+							}
+							else
+							{
+								decimal gain = (decimal)Math.Pow(10.0, currentVal / 20.0);
+								gain = Math.Max(0.01m, Math.Min(10m, gain));
+								if (c.diversityForm != null)
+								{
+									if (c.CATDiversityRXRefSource)
+										c.diversityForm.DiversityR2Gain = gain;
+									else
+										c.diversityForm.DiversityGain = gain;
+								}
+							}
+						}));
+						if (settleMs > 0) System.Threading.Thread.Sleep(settleMs);
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return false;
+						float dbm = -200f;
+						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+						{
+							dbm = WDSP.CalculateRXMeter(0, 0, meterType);
+						}));
+						long ms = sw.ElapsedMilliseconds;
+						resultList.Add(ms + ":" +
+							currentVal.ToString("F1", ic) + ":" +
+							dbm.ToString("F1", ic));
+						return true;
+					};
+
+					var fwdResults = new System.Collections.Generic.List<string>();
+					float val = start;
+					while (val <= end && fwdResults.Count < 5000)
+					{
+						if (!doStep(val, fwdResults)) return;
+						val += step;
+					}
+
+					var bwdResults = new System.Collections.Generic.List<string>();
+					val = end;
+					while (val >= start && bwdResults.Count < 5000)
+					{
+						if (!doStep(val, bwdResults)) return;
+						val -= step;
+					}
+
+					sw.Stop();
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+					listener.sendTextFrame("diversity_fastsweep_result_ex:fwd_" + sweepType + "," +
+						string.Join(",", fwdResults) + ";");
+					listener.sendTextFrame("diversity_fastsweep_result_ex:bwd_" + sweepType + "," +
+						string.Join(",", bwdResults) + ";");
+				}
+				catch (Exception ex)
+				{
+					System.Diagnostics.Debug.Print("Diversity fastsweep error: " + ex.Message);
+				}
+			});
+		}
+
+		// ddc_sample_rate_ex:rx,rate;  (rate must be one of 48000/96000/192000/384000/768000/1536000)
+		// GET via empty payload OR rx-only. Stock Thetis applies the rate via the existing
+		// SetupForm.SetHWSampleRate() path used by both UI selection and CAT — TCI-initiated
+		// SET is just a remote-control hook on top of the same plumbing.
+		//
+		// KNOWN-ISSUE (upstream regression suspected between 2.10.3.13 and 2.10.3.15): rate
+		// change while RX is active may freeze the DSP pipeline. Owner workaround: turn RX
+		// off, change rate, then turn RX on. Same caveat applies to UI-driven changes.
+		private void handleDdcSampleRateEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			if (args == null || args.Length < 1)
+			{
+				// No-args query: send both RX1 and RX2
+				sendTextFrame("ddc_sample_rate_ex:0," + consoleThreadSafe.SampleRateRX1 + ";");
+				sendTextFrame("ddc_sample_rate_ex:1," + consoleThreadSafe.SampleRateRX2 + ";");
+				return;
+			}
+			if (!int.TryParse(args[0], out int rx)) return;
+			if (rx < 0 || rx > 1) return;
+
+			if (args.Length == 1)
+			{
+				int rate = rx == 0 ? consoleThreadSafe.SampleRateRX1 : consoleThreadSafe.SampleRateRX2;
+				sendTextFrame("ddc_sample_rate_ex:" + rx + "," + rate + ";");
+			}
+			else
+			{
+				if (!int.TryParse(args[1], out int rate)) return;
+				if (!(rate == 48000 || rate == 96000 || rate == 192000 || rate == 384000 || rate == 768000 || rate == 1536000)) return;
+				if (_console != null && !_console.IsSetupFormNull)
+				{
+					var rxIndex = rx + 1; // SetupForm uses 1-based RX index
+					_console.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+					{
+						_console.SetupForm.SetHWSampleRate(rxIndex, rate);
+					}));
+					// Echo current state after SET (Thetis may apply asynchronously; the
+					// echo gives clients the value as it stands right now).
+					int echoRate = rx == 0 ? consoleThreadSafe.SampleRateRX1 : consoleThreadSafe.SampleRateRX2;
+					sendTextFrame("ddc_sample_rate_ex:" + rx + "," + echoRate + ";");
+				}
+			}
+		}
+
+		// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-14
+		// s9_frequency_ex:<mhz>;  Push of the S9-frequency threshold (MHz).
+		// VFO frequencies at or above this value get S-meter scale S9 = -93 dBm
+		// (IARU VHF/UHF convention); below it the HF S9 = -73 dBm scale applies.
+		// User-configurable on the Thetis side (default 30 MHz). The TL-server
+		// holds the last-pushed value and applies the appropriate band shift
+		// when computing S-meter display values.
+		private void sendS9FrequencyEx(double mhz)
+		{
+			sendTextFrame("s9_frequency_ex:" + mhz.ToString("F6", CultureInfo.InvariantCulture) + ";");
+		}
+		// Public wrapper so the server's broadcast helper can re-push the value
+		// when the user changes it in Setup at runtime. Self-gates on extensions
+		// so a runtime-toggle of the extensions checkbox doesn't leak frames.
+		public void PushS9Frequency(double mhz)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			sendS9FrequencyEx(mhz);
+		}
+		// [ThetisLink TL2-1] END
+
+		// [ThetisLink TL2-3] BEGIN — modification by PA3GHM (cjenschede), 2026-05-29
+		// rx_only_ex:<bool>;  Push of the current "Receive only" state. Mirrors
+		// the s9_frequency_ex pattern: console.RXOnly setter calls
+		// TCPIPtciServer.BroadcastRxOnly on every real transition, so external
+		// clients see operator-driven UI toggles (Setup → 'Receive only') in
+		// real time — not just on TCI SET/GET handler-echoes. Self-gates on
+		// the ThetisLink-extensions checkbox.
+		private void sendRxOnlyEx(bool rxOnly)
+		{
+			sendTextFrame("rx_only_ex:" + rxOnly.ToString().ToLower() + ";");
+		}
+		public void PushRxOnlyEx(bool rxOnly)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			sendRxOnlyEx(rxOnly);
+		}
+		// [ThetisLink TL2-3] END
+
+		// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-14
+		// auto_recenter_owner_ex:true|false;  Handshake by which a TCI client claims
+		// (or releases) ownership of the smooth-scroll re-center action.
+		//
+		// Why this exists: when `ThetisLinkExtensionsEnabled` is on, the smooth-scroll
+		// paths in console.cs are guarded so Thetis does not move CentreFrequency
+		// itself — the TL server takes over via ZZCN/ZZCO toggle. But with NO active
+		// server connected, no one is left to perform the recenter and the VFO pins
+		// at the visible-spectrum edge waiting for a ZZCN trigger that never comes.
+		// The handshake lets Thetis distinguish "extensions on, server active" from
+		// "extensions on, no server". Smooth-scroll only stays disabled when at least
+		// one connected client has claimed ownership; otherwise Thetis behaves as
+		// stock and scrolls normally.
+		//
+		// Release is automatic on socket disconnect (TCPIPtciServer.OnSocketListenerDisconnected
+		// decrements the refcount based on m_isRecenterOwner) so a server crash or
+		// network drop does not leak ownership.
+		private void handleAutoRecenterOwnerEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			if (args == null || args.Length != 1) return;
+			if (args[0].Trim() == "") return;
+			if (!bool.TryParse(args[0], out bool claim)) return;
+
+			if (claim && !m_isRecenterOwner)
+			{
+				m_isRecenterOwner = true;
+				m_server?.IncrementRecenterOwners();
+			}
+			else if (!claim && m_isRecenterOwner)
+			{
+				m_isRecenterOwner = false;
+				m_server?.DecrementRecenterOwners();
+			}
+			sendTextFrame("auto_recenter_owner_ex:" + m_isRecenterOwner.ToString().ToLower() + ";");
+		}
+		// [ThetisLink TL2-1] END
+
+		// ── Diversity null-suite (autonull / smartnull / ultranull) ──────────
+		// Algorithm-driven progress streams. Each handler runs the algorithm in a
+		// ThreadPool worker thread, per-step calls _console.Invoke for property writes
+		// and S-meter reads, and emits `diversity_autonull_status_ex:progress,...;`
+		// frames for live client visualisation. Final emit is `done,...` or `error,...`.
+		// Pattern verbatim ported from TL-26 (empirically tuned algorithms; algorithmic
+		// logic identical, surrounding API adapted to stock TCI accessors).
+		// Cancellation-guards (m_disconnected + IsDisposed) on every Invoke() and the
+		// final result emit, matching the basics-patch sweep/fastsweep cancellation pattern.
+
+		// diversity_autonull_ex:settle|step1|step2|...;
+		// step format: "P:0:90:180:270" (phase offsets) or "G:-3:-1:0:1:3" (gain offsets in dB)
+		private void handleDiversityAutonullEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			if (args == null || args.Length < 1) return;
+			// Args come as comma-separated from TCI parser. Re-join and split on pipe.
+			string full = string.Join(",", args);
+			string[] parts = full.Split('|');
+			if (parts.Length < 2) return;
+			if (!int.TryParse(parts[0].Trim(), out int settleMs)) return;
+			settleMs = Math.Max(5, Math.Min(1000, settleMs));
+
+			ensureDiversityForm();
+
+			string[] steps = parts.Skip(1).ToArray();
+
+			var stepList = new System.Collections.Generic.List<(bool isPhase, float[] offsets)>();
+			foreach (string step in steps)
+			{
+				string s = step.Trim();
+				if (s.Length < 2) continue;
+				bool isPhase = s[0] == 'P' || s[0] == 'p';
+				bool isGain = s[0] == 'G' || s[0] == 'g';
+				if (!isPhase && !isGain) continue;
+				var offsets = s.Substring(2).Split(':')
+					.Select(v => { float.TryParse(v.Trim(), System.Globalization.NumberStyles.Float,
+						System.Globalization.CultureInfo.InvariantCulture, out float f); return f; })
+					.Where(f => f != 0 || s.Contains("0"))
+					.ToArray();
+				if (offsets.Length > 0)
+					stepList.Add((isPhase, offsets));
+			}
+
+			if (stepList.Count == 0) return;
+
+			var listener = this;
+			var c = _console;
+			var ic = System.Globalization.CultureInfo.InvariantCulture;
+			System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+			{
+				try
+				{
+					float bestPhase = 0f;
+					float bestGainDb = 0f;
+					float bestSmeter = 999f;
+					bool firstPhaseRound = true;
+
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+					{
+						decimal gain = c.DiversityRXRef ?
+							(c.diversityForm != null ? c.diversityForm.DiversityR2Gain : 1m) :
+							(c.diversityForm != null ? c.diversityForm.DiversityGain : 1m);
+						bestGainDb = (float)(20.0 * Math.Log10(Math.Max(0.01, (double)gain)));
+					}));
+
+					for (int round = 0; round < stepList.Count; round++)
+					{
+						var (isPhase, offsets) = stepList[round];
+						float roundBestSmeter = 999f;
+						float roundBestValue = 0f;
+
+						foreach (float offset in offsets)
+						{
+							if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+							float emittedPhase = 0f;
+							float emittedGain = 1f;
+							bool emittedIsRx1Ref = false;
+							c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+							{
+								if (isPhase)
+								{
+									float phase = firstPhaseRound ? offset : bestPhase + offset;
+									while (phase > 180f) phase -= 360f;
+									while (phase < -180f) phase += 360f;
+									c.CATDiversityPhase = (decimal)phase;
+									emittedPhase = phase;
+								}
+								else
+								{
+									float gainDb = bestGainDb + offset;
+									decimal gain = (decimal)Math.Pow(10.0, gainDb / 20.0);
+									gain = Math.Max(0.01m, Math.Min(10m, gain));
+									emittedIsRx1Ref = c.DiversityRXRef;
+									if (c.diversityForm != null)
+									{
+										if (emittedIsRx1Ref)
+											c.diversityForm.DiversityR2Gain = gain;
+										else
+											c.diversityForm.DiversityGain = gain;
+									}
+									emittedGain = (float)gain;
+								}
+							}));
+
+							// Live circle-position broadcast — emit per-step phase/gain so
+							// the calling client sees the algorithm's tuning trajectory.
+							if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+							{
+								if (isPhase)
+								{
+									listener.sendTextFrame("diversity_phase_ex:" + ((int)(emittedPhase * 100f)) + ";");
+								}
+								else
+								{
+									int nonRefRx = emittedIsRx1Ref ? 1 : 0;
+									int refRx = emittedIsRx1Ref ? 0 : 1;
+									listener.sendTextFrame("diversity_gain_ex:" + nonRefRx + "," + ((int)(emittedGain * 1000f)) + ";");
+									listener.sendTextFrame("diversity_gain_ex:" + refRx + ",1000;");
+								}
+							}
+
+							System.Threading.Thread.Sleep(settleMs);
+
+							if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+							float dbm = -200f;
+							c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+							{
+								dbm = WDSP.CalculateRXMeter(0, 0, WDSP.MeterType.SIGNAL_STRENGTH);
+							}));
+
+							if (dbm < roundBestSmeter)
+							{
+								roundBestSmeter = dbm;
+								roundBestValue = offset;
+							}
+						}
+
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						if (isPhase)
+						{
+							bestPhase = firstPhaseRound ? roundBestValue : bestPhase + roundBestValue;
+							while (bestPhase > 180f) bestPhase -= 360f;
+							while (bestPhase < -180f) bestPhase += 360f;
+							firstPhaseRound = false;
+							c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+							{
+								c.CATDiversityPhase = (decimal)bestPhase;
+							}));
+							if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+								listener.sendTextFrame("diversity_phase_ex:" + ((int)(bestPhase * 100f)) + ";");
+						}
+						else
+						{
+							bestGainDb += roundBestValue;
+							float bestGainEmit = 1f;
+							bool isRx1RefEmit = false;
+							c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+							{
+								decimal gain = (decimal)Math.Pow(10.0, bestGainDb / 20.0);
+								gain = Math.Max(0.01m, Math.Min(10m, gain));
+								isRx1RefEmit = c.DiversityRXRef;
+								if (c.diversityForm != null)
+								{
+									if (isRx1RefEmit)
+										c.diversityForm.DiversityR2Gain = gain;
+									else
+										c.diversityForm.DiversityGain = gain;
+								}
+								bestGainEmit = (float)gain;
+							}));
+							if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+							{
+								int nonRefRx = isRx1RefEmit ? 1 : 0;
+								int refRx = isRx1RefEmit ? 0 : 1;
+								listener.sendTextFrame("diversity_gain_ex:" + nonRefRx + "," + ((int)(bestGainEmit * 1000f)) + ";");
+								listener.sendTextFrame("diversity_gain_ex:" + refRx + ",1000;");
+							}
+						}
+
+						if (roundBestSmeter < bestSmeter)
+							bestSmeter = roundBestSmeter;
+
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						listener.sendTextFrame("diversity_autonull_status_ex:progress," + (round + 1) + "," + stepList.Count +
+							"," + bestPhase.ToString("F1", ic) +
+							"," + bestGainDb.ToString("F1", ic) +
+							"," + bestSmeter.ToString("F1", ic) + ";");
+					}
+
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+					float offDbm = -200f, onDbm = -200f;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = false; }));
+					System.Threading.Thread.Sleep(500);
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+					{
+						offDbm = WDSP.CalculateRXMeter(0, 0, WDSP.MeterType.SIGNAL_STRENGTH);
+					}));
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = true; }));
+					System.Threading.Thread.Sleep(500);
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+					{
+						onDbm = WDSP.CalculateRXMeter(0, 0, WDSP.MeterType.SIGNAL_STRENGTH);
+					}));
+
+					float improvement = offDbm - onDbm;
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+					{
+						listener.sendTextFrame("diversity_autonull_status_ex:done," +
+							bestPhase.ToString("F1", ic) + "," +
+							bestGainDb.ToString("F1", ic) + "," +
+							improvement.ToString("F1", ic) + "," +
+							offDbm.ToString("F1", ic) + "," +
+							onDbm.ToString("F1", ic) + ";");
+					}
+				}
+				catch (Exception ex)
+				{
+					System.Diagnostics.Debug.Print("Diversity autonull error: " + ex.Message);
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+						listener.sendTextFrame("diversity_autonull_status_ex:error," + ex.Message.Replace(",", " ") + ";");
+				}
+			});
+		}
+
+		// diversity_smartnull_ex:coarseStep,coarseSettle,fineRange,fineStep,fineSettle,gainRange,gainStep,gainSettle;
+		// Lag-aware AVG sweep — coarse 360°+90°, fine refinement, gain optimization, comparison.
+		private void handleDiversitySmartNullEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			ensureDiversityForm();
+
+			float coarseStep = 5f; int coarseSettle = 50;
+			float fineRange = 15f, fineStep = 1f; int fineSettle = 50;
+			float gainRangeDb = 6f, gainStepDb = 0.5f; int gainSettle = 50;
+			var ic = System.Globalization.CultureInfo.InvariantCulture;
+			if (args != null && args.Length >= 8)
+			{
+				float.TryParse(args[0], System.Globalization.NumberStyles.Float, ic, out coarseStep);
+				if (float.TryParse(args[1], System.Globalization.NumberStyles.Float, ic, out float cs)) coarseSettle = (int)cs;
+				float.TryParse(args[2], System.Globalization.NumberStyles.Float, ic, out fineRange);
+				float.TryParse(args[3], System.Globalization.NumberStyles.Float, ic, out fineStep);
+				if (float.TryParse(args[4], System.Globalization.NumberStyles.Float, ic, out float fs)) fineSettle = (int)fs;
+				float.TryParse(args[5], System.Globalization.NumberStyles.Float, ic, out gainRangeDb);
+				float.TryParse(args[6], System.Globalization.NumberStyles.Float, ic, out gainStepDb);
+				if (float.TryParse(args[7], System.Globalization.NumberStyles.Float, ic, out float gs)) gainSettle = (int)gs;
+			}
+			coarseStep = Math.Max(0.5f, Math.Min(30f, coarseStep));
+			coarseSettle = Math.Max(10, Math.Min(1000, coarseSettle));
+			fineRange = Math.Max(1f, Math.Min(90f, fineRange));
+			fineStep = Math.Max(0.1f, Math.Min(10f, fineStep));
+			fineSettle = Math.Max(10, Math.Min(1000, fineSettle));
+			gainRangeDb = Math.Max(0.5f, Math.Min(20f, gainRangeDb));
+			gainStepDb = Math.Max(0.1f, Math.Min(3f, gainStepDb));
+			gainSettle = Math.Max(10, Math.Min(1000, gainSettle));
+
+			var listener = this;
+			var c = _console;
+
+			System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+			{
+				try
+				{
+					var sw = System.Diagnostics.Stopwatch.StartNew();
+
+					Action<float> setPhase = (p) =>
+					{
+						while (p > 180f) p -= 360f;
+						while (p < -180f) p += 360f;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+						{
+							c.CATDiversityPhase = (decimal)p;
+						}));
+						// Live circle-position broadcast — TL-26 used m_server.BroadcastDiversityPhase
+						// here; we have no equivalent helper, so emit directly to the calling client.
+						if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+							listener.sendTextFrame("diversity_phase_ex:" + ((int)(p * 100f)) + ";");
+					};
+
+					Action<float> setGain = (g) =>
+					{
+						g = Math.Max(0.01f, Math.Min(10f, g));
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						bool isRx1Ref = false;
+						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+						{
+							isRx1Ref = c.DiversityRXRef;
+							if (c.diversityForm != null)
+							{
+								if (isRx1Ref)
+									c.diversityForm.DiversityR2Gain = (decimal)g;
+								else
+									c.diversityForm.DiversityGain = (decimal)g;
+							}
+						}));
+						// Live broadcast: non-ref RX gets g, ref RX always 1.000 (per TL-26 convention).
+						if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+						{
+							int nonRefRx = isRx1Ref ? 1 : 0;
+							int refRx = isRx1Ref ? 0 : 1;
+							listener.sendTextFrame("diversity_gain_ex:" + nonRefRx + "," + ((int)(g * 1000f)) + ";");
+							listener.sendTextFrame("diversity_gain_ex:" + refRx + ",1000;");
+						}
+					};
+
+					Func<float> readAvg = () =>
+					{
+						float dbm = -200f;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return dbm;
+						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+						{
+							dbm = WDSP.CalculateRXMeter(0, 0, WDSP.MeterType.AVG_SIGNAL_STRENGTH);
+						}));
+						return dbm;
+					};
+
+					listener.sendTextFrame("diversity_autonull_status_ex:progress,1,5,0,0,-200;");
+
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = false; }));
+					System.Threading.Thread.Sleep(300);
+
+					float rx1Dbm = -200f, rx2Dbm = -200f;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+					{
+						rx1Dbm = WDSP.CalculateRXMeter(0, 0, WDSP.MeterType.AVG_SIGNAL_STRENGTH);
+						rx2Dbm = WDSP.CalculateRXMeter(2, 0, WDSP.MeterType.AVG_SIGNAL_STRENGTH);
+					}));
+
+					bool rxRef = false;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { rxRef = c.DiversityRXRef; }));
+					float refDbm = rxRef ? rx1Dbm : rx2Dbm;
+					float nonrefDbm = rxRef ? rx2Dbm : rx1Dbm;
+					float diffDb = refDbm - nonrefDbm;
+					float eqGainLin = (float)Math.Pow(10.0, diffDb / 20.0);
+					eqGainLin = Math.Max(0.01f, Math.Min(10f, eqGainLin));
+
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = true; }));
+					System.Threading.Thread.Sleep(200);
+					setGain(eqGainLin);
+					setPhase(0f);
+					System.Threading.Thread.Sleep(100);
+
+					int coarseSteps = (int)(450f / coarseStep);
+					listener.sendTextFrame("diversity_autonull_status_ex:progress,2,5,0,0,-200;");
+
+					float bestPhase = -180f;
+					float bestSmeter = 999f;
+					for (int i = 0; i <= coarseSteps; i++)
+					{
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						float p = -180f + i * coarseStep;
+						setPhase(p);
+						System.Threading.Thread.Sleep(coarseSettle);
+						float dbm = readAvg();
+						if (dbm < bestSmeter)
+						{
+							bestSmeter = dbm;
+							bestPhase = p;
+						}
+					}
+					setPhase(bestPhase);
+
+					listener.sendTextFrame("diversity_autonull_status_ex:progress,3,5," +
+						bestPhase.ToString("F1", ic) + ",0," + bestSmeter.ToString("F1", ic) + ";");
+
+					float coarseNull = bestPhase;
+					bestSmeter = 999f;
+					for (float offset = -fineRange; offset <= fineRange; offset += fineStep)
+					{
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						float p = coarseNull + offset;
+						setPhase(p);
+						System.Threading.Thread.Sleep(fineSettle);
+						float dbm = readAvg();
+						if (dbm < bestSmeter)
+						{
+							bestSmeter = dbm;
+							bestPhase = p;
+						}
+					}
+					setPhase(bestPhase);
+
+					listener.sendTextFrame("diversity_autonull_status_ex:progress,4,5," +
+						bestPhase.ToString("F1", ic) + ",0," + bestSmeter.ToString("F1", ic) + ";");
+
+					float currentGainDb = 0f;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+					{
+						decimal gain = c.DiversityRXRef ?
+							(c.diversityForm != null ? c.diversityForm.DiversityR2Gain : 1m) :
+							(c.diversityForm != null ? c.diversityForm.DiversityGain : 1m);
+						currentGainDb = (float)(20.0 * Math.Log10(Math.Max(0.01, (double)gain)));
+					}));
+
+					float bestGainDb = currentGainDb;
+					for (float offsetDb = -gainRangeDb; offsetDb <= gainRangeDb; offsetDb += gainStepDb)
+					{
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						float gDb = currentGainDb + offsetDb;
+						float gLin = (float)Math.Pow(10.0, gDb / 20.0);
+						setGain(gLin);
+						System.Threading.Thread.Sleep(gainSettle);
+						float dbm = readAvg();
+						if (dbm < bestSmeter)
+						{
+							bestSmeter = dbm;
+							bestGainDb = gDb;
+						}
+					}
+					float bestGainLin = (float)Math.Pow(10.0, bestGainDb / 20.0);
+					setGain(bestGainLin);
+					setPhase(bestPhase);
+
+					listener.sendTextFrame("diversity_autonull_status_ex:progress,5,5," +
+						bestPhase.ToString("F1", ic) + "," + bestGainDb.ToString("F1", ic) + "," + bestSmeter.ToString("F1", ic) + ";");
+
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+					float offDbm = -200f, onDbm = -200f;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = false; }));
+					System.Threading.Thread.Sleep(500);
+					offDbm = readAvg();
+
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = true; }));
+					System.Threading.Thread.Sleep(500);
+					onDbm = readAvg();
+
+					float improvement = offDbm - onDbm;
+					sw.Stop();
+
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+					{
+						listener.sendTextFrame("diversity_autonull_status_ex:done," +
+							bestPhase.ToString("F1", ic) + "," +
+							bestGainDb.ToString("F1", ic) + "," +
+							improvement.ToString("F1", ic) + "," +
+							offDbm.ToString("F1", ic) + "," +
+							onDbm.ToString("F1", ic) + ";");
+					}
+				}
+				catch (Exception ex)
+				{
+					System.Diagnostics.Debug.Print("SmartNull error: " + ex.Message);
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+						listener.sendTextFrame("diversity_autonull_status_ex:error," + ex.Message.Replace(",", " ") + ";");
+				}
+			});
+		}
+
+		// diversity_ultranull_ex:coarseStep,coarseSettle,fineRange,fineStep,fineSettle,gainRange,gainStep,gainSettle;
+		// Continuous fwd+bwd 1° AVG sweep — averages fwd/bwd minima to cancel AVG-filter lag.
+		private void handleDiversityUltraNullEx(string[] args)
+		{
+			if (consoleThreadSafe == null || !consoleThreadSafe.ThetisLinkExtensionsEnabled) return;
+			ensureDiversityForm();
+
+			float coarseStep = 1f;
+			float fineRange = 15f, fineStep = 1f; int fineSettle = 50;
+			float gainRangeDb = 6f, gainStepDb = 0.5f; int gainSettle = 50;
+			var ic = System.Globalization.CultureInfo.InvariantCulture;
+			if (args != null && args.Length >= 8)
+			{
+				float.TryParse(args[2], System.Globalization.NumberStyles.Float, ic, out fineRange);
+				float.TryParse(args[3], System.Globalization.NumberStyles.Float, ic, out fineStep);
+				if (float.TryParse(args[4], System.Globalization.NumberStyles.Float, ic, out float fs)) fineSettle = (int)fs;
+				float.TryParse(args[5], System.Globalization.NumberStyles.Float, ic, out gainRangeDb);
+				float.TryParse(args[6], System.Globalization.NumberStyles.Float, ic, out gainStepDb);
+				if (float.TryParse(args[7], System.Globalization.NumberStyles.Float, ic, out float gs)) gainSettle = (int)gs;
+			}
+			coarseStep = 1.0f;
+			fineRange = Math.Max(1f, Math.Min(90f, fineRange));
+			fineStep = Math.Max(0.1f, Math.Min(10f, fineStep));
+			fineSettle = Math.Max(10, Math.Min(1000, fineSettle));
+			gainRangeDb = Math.Max(0.5f, Math.Min(20f, gainRangeDb));
+			gainStepDb = Math.Max(0.1f, Math.Min(3f, gainStepDb));
+			gainSettle = Math.Max(10, Math.Min(1000, gainSettle));
+
+			var listener = this;
+			var c = _console;
+
+			System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+			{
+				try
+				{
+					var sw = System.Diagnostics.Stopwatch.StartNew();
+
+					Action<float> setPhase = (p) =>
+					{
+						while (p > 180f) p -= 360f;
+						while (p < -180f) p += 360f;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+						{
+							c.CATDiversityPhase = (decimal)p;
+						}));
+						// Live circle-position broadcast — TL-26 used m_server.BroadcastDiversityPhase
+						// here; we have no equivalent helper, so emit directly to the calling client.
+						if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+							listener.sendTextFrame("diversity_phase_ex:" + ((int)(p * 100f)) + ";");
+					};
+
+					Action<float> setGain = (g) =>
+					{
+						g = Math.Max(0.01f, Math.Min(10f, g));
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						bool isRx1Ref = false;
+						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+						{
+							isRx1Ref = c.DiversityRXRef;
+							if (c.diversityForm != null)
+							{
+								if (isRx1Ref)
+									c.diversityForm.DiversityR2Gain = (decimal)g;
+								else
+									c.diversityForm.DiversityGain = (decimal)g;
+							}
+						}));
+						// Live broadcast: non-ref RX gets g, ref RX always 1.000 (per TL-26 convention).
+						if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+						{
+							int nonRefRx = isRx1Ref ? 1 : 0;
+							int refRx = isRx1Ref ? 0 : 1;
+							listener.sendTextFrame("diversity_gain_ex:" + nonRefRx + "," + ((int)(g * 1000f)) + ";");
+							listener.sendTextFrame("diversity_gain_ex:" + refRx + ",1000;");
+						}
+					};
+
+					Func<float> readAvg = () =>
+					{
+						float dbm = -200f;
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return dbm;
+						c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+						{
+							dbm = WDSP.CalculateRXMeter(0, 0, WDSP.MeterType.AVG_SIGNAL_STRENGTH);
+						}));
+						return dbm;
+					};
+
+					listener.sendTextFrame("diversity_autonull_status_ex:progress,1,4,0,0,-200;");
+
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = false; }));
+					System.Threading.Thread.Sleep(100);
+					float rx1Dbm = -200f, rx2Dbm = -200f;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+					{
+						rx1Dbm = WDSP.CalculateRXMeter(0, 0, WDSP.MeterType.AVG_SIGNAL_STRENGTH);
+						rx2Dbm = WDSP.CalculateRXMeter(2, 0, WDSP.MeterType.AVG_SIGNAL_STRENGTH);
+					}));
+					bool rxRef = false;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { rxRef = c.DiversityRXRef; }));
+					float refDbm = rxRef ? rx1Dbm : rx2Dbm;
+					float nonrefDbm = rxRef ? rx2Dbm : rx1Dbm;
+					float diffDb = refDbm - nonrefDbm;
+					float eqGainLin = (float)Math.Pow(10.0, diffDb / 20.0);
+					eqGainLin = Math.Max(0.01f, Math.Min(10f, eqGainLin));
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = true; }));
+					System.Threading.Thread.Sleep(100);
+					setGain(eqGainLin);
+					setPhase(0f);
+
+					listener.sendTextFrame("diversity_autonull_status_ex:progress,2,4,0,0,-200;");
+					int totalSteps = (int)(450f / coarseStep);
+					float fwdBestPhase = -180f;
+					float fwdBestDbm = 999f;
+					for (int i = 0; i <= totalSteps; i++)
+					{
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						float p = -180f + i * coarseStep;
+						setPhase(p);
+						float dbm = readAvg();
+						if (dbm < fwdBestDbm)
+						{
+							fwdBestDbm = dbm;
+							fwdBestPhase = p;
+							while (fwdBestPhase > 180f) fwdBestPhase -= 360f;
+							while (fwdBestPhase < -180f) fwdBestPhase += 360f;
+						}
+					}
+
+					float bwdBestPhase = 180f;
+					float bwdBestDbm = 999f;
+					for (int i = 0; i <= totalSteps; i++)
+					{
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						float p = 180f - i * coarseStep;
+						setPhase(p);
+						float dbm = readAvg();
+						if (dbm < bwdBestDbm)
+						{
+							bwdBestDbm = dbm;
+							bwdBestPhase = p;
+							while (bwdBestPhase > 180f) bwdBestPhase -= 360f;
+							while (bwdBestPhase < -180f) bwdBestPhase += 360f;
+						}
+					}
+
+					float trueNull = (fwdBestPhase + bwdBestPhase) / 2f;
+					if (Math.Abs(fwdBestPhase - bwdBestPhase) > 180f)
+					{
+						trueNull = ((fwdBestPhase + bwdBestPhase + 360f) / 2f);
+						if (trueNull > 180f) trueNull -= 360f;
+					}
+					setPhase(trueNull);
+					System.Threading.Thread.Sleep(400);
+
+					float bestPhase = trueNull;
+					float bestSmeter = readAvg();
+
+					listener.sendTextFrame("diversity_autonull_status_ex:progress,3,4," +
+						bestPhase.ToString("F1", ic) + ",0," + bestSmeter.ToString("F1", ic) + ";");
+					float currentGainDb = 0f;
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() =>
+					{
+						decimal gain = c.DiversityRXRef ?
+							(c.diversityForm != null ? c.diversityForm.DiversityR2Gain : 1m) :
+							(c.diversityForm != null ? c.diversityForm.DiversityGain : 1m);
+						currentGainDb = (float)(20.0 * Math.Log10(Math.Max(0.01, (double)gain)));
+					}));
+					float bestGainDb = currentGainDb;
+					for (float offsetDb = -gainRangeDb; offsetDb <= gainRangeDb; offsetDb += gainStepDb)
+					{
+						if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+						float gDb = currentGainDb + offsetDb;
+						float gLin = (float)Math.Pow(10.0, gDb / 20.0);
+						setGain(gLin);
+						System.Threading.Thread.Sleep(gainSettle);
+						float dbm = readAvg();
+						if (dbm < bestSmeter)
+						{
+							bestSmeter = dbm;
+							bestGainDb = gDb;
+						}
+					}
+					float bestGainLin = (float)Math.Pow(10.0, bestGainDb / 20.0);
+					setGain(bestGainLin);
+					setPhase(bestPhase);
+
+					listener.sendTextFrame("diversity_autonull_status_ex:progress,4,4," +
+						bestPhase.ToString("F1", ic) + "," + bestGainDb.ToString("F1", ic) + "," + bestSmeter.ToString("F1", ic) + ";");
+					System.Threading.Thread.Sleep(500);
+					float onDbm = readAvg();
+					if (listener.shouldAbortSq4kouP1DiversityWorker(c)) return;
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = false; }));
+					System.Threading.Thread.Sleep(500);
+					float offDbm = readAvg();
+					c.Invoke(new System.Windows.Forms.MethodInvoker(() => { c.Diversity2 = true; }));
+
+					float improvement = offDbm - onDbm;
+					sw.Stop();
+
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+					{
+						listener.sendTextFrame("diversity_autonull_status_ex:done," +
+							bestPhase.ToString("F1", ic) + "," +
+							bestGainDb.ToString("F1", ic) + "," +
+							improvement.ToString("F1", ic) + "," +
+							offDbm.ToString("F1", ic) + "," +
+							onDbm.ToString("F1", ic) + ";");
+					}
+				}
+				catch (Exception ex)
+				{
+					System.Diagnostics.Debug.Print("UltraNull error: " + ex.Message);
+					if (!listener.shouldAbortSq4kouP1DiversityWorker(c))
+						listener.sendTextFrame("diversity_autonull_status_ex:error," + ex.Message.Replace(",", " ") + ";");
+				}
+			});
+		}
+		// [ThetisLink TL2-1] END
+
 		private void sendInitialisationData()
         {
 			string sProtocol; //MW0LGE_22 emulate ee3 protocol
@@ -2864,6 +4178,14 @@ namespace Thetis
 			sendTextFrame("modulations_list:" + ("am,sam,dsb,lsb,usb,nfm,fm,digl,digu," + sCW).ToUpper() + ";"); // MW0LGE_22b modulations are upper in sun, so replicate
 
 			sendInitialRadioState();
+
+			// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-06
+			// Order: caps first (so client knows what the server supports), then TL-only _ex
+			// initial state (so client can sync without querying). Both self-gated and no-op
+			// when the ThetisLink-extensions checkbox is off.
+			SendCapabilitiesFrame();
+			sendInitialThetisLinkState();
+			// [ThetisLink TL2-1] END
 
 			sendTextFrame("ready;");
 
@@ -4230,11 +5552,28 @@ namespace Thetis
 						{
 							if(consoleThreadSafe.RX1DSPMode != mode)
 								consoleThreadSafe.RX1DSPMode = mode;
+							// [ThetisLink TL2-4] BEGIN — modification by PA3GHM (cjenschede), 2026-06-03
+							// Stock Thetis stuurt geen rx_filter_band notify na een TCI-driven
+							// DSPMode-change; daardoor blijft de spectrum-overlay in TCI-clients
+							// (en Thetis Console) de oude mode-grenzen tonen. Hier fan-outen via
+							// TCPIPtciServer.BroadcastFilterBand zodat ALLE verbonden TCI-clients
+							// (niet alleen degene die dit MODULATION-commando stuurde) de actuele
+							// filter_low/high direct gesynchroniseerd krijgen. DSPMode-setter
+							// past de filter-preset synchroon aan, dus RX1FilterLow/High zijn op
+							// dit punt al actueel.
+							m_server?.BroadcastFilterBand(0, consoleThreadSafe.RX1FilterLow, consoleThreadSafe.RX1FilterHigh);
+							// [ThetisLink TL2-4] END
 						}
 						else if (rx == 1)
 						{
 							if(consoleThreadSafe.RX2DSPMode != mode)
 								consoleThreadSafe.RX2DSPMode = mode;
+							// [ThetisLink TL2-4] BEGIN — modification by PA3GHM (cjenschede), 2026-06-03
+							// Zie comment in rx==0 tak: fan-out filter-band notify via parent
+							// BroadcastFilterBand zodat alle TCI-clients de actuele RX2-filter-
+							// grenzen direct krijgen.
+							m_server?.BroadcastFilterBand(1, consoleThreadSafe.RX2FilterLow, consoleThreadSafe.RX2FilterHigh);
+							// [ThetisLink TL2-4] END
 						}
 					}
 				}
@@ -5699,6 +7038,57 @@ namespace Thetis
                         // this is special, we send whole of msg and handle it there
                         handleRunCatCommand(msg);
                         break;
+                    // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-28
+                    // Preventive transmit-inhibit (RX-only). SET form with arg.
+                    case "rx_only_ex":
+                        handleRxOnlyEx(args);
+                        break;
+                    // [ThetisLink TL2-1] END
+                    // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-06
+                    // Diversity-basics dispatch (SET form with args). Each handler self-gates on
+                    // ThetisLinkExtensionsEnabled; vink UIT means no-op.
+                    case "diversity_enable_ex":
+                        handleDiversityEnableEx(args);
+                        break;
+                    case "diversity_source_ex":
+                        handleDiversitySourceEx(args);
+                        break;
+                    case "diversity_ref_ex":
+                        handleDiversityRefEx(args);
+                        break;
+                    case "diversity_phase_ex":
+                        handleDiversityPhaseEx(args);
+                        break;
+                    case "diversity_gain_ex":
+                        handleDiversityGainEx(args);
+                        break;
+                    case "diversity_gain_multi_ex":
+                        handleDiversityGainMultiEx(args);
+                        break;
+                    case "diversity_sweep_ex":
+                        handleDiversitySweepEx(args);
+                        break;
+                    case "diversity_fastsweep_ex":
+                        handleDiversityFastsweepEx(args);
+                        break;
+                    case "diversity_autonull_ex":
+                        handleDiversityAutonullEx(args);
+                        break;
+                    case "diversity_smartnull_ex":
+                        handleDiversitySmartNullEx(args);
+                        break;
+                    case "diversity_ultranull_ex":
+                        handleDiversityUltraNullEx(args);
+                        break;
+                    case "ddc_sample_rate_ex":
+                        handleDdcSampleRateEx(args);
+                        break;
+                    // [ThetisLink TL2-1] END
+                    // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-14
+                    case "auto_recenter_owner_ex":
+                        handleAutoRecenterOwnerEx(args);
+                        break;
+                    // [ThetisLink TL2-1] END
 
                 }
             }
@@ -5778,6 +7168,40 @@ namespace Thetis
                         string[] tmpArgs = new string[0];
                         handleTXProfile(tmpArgs); // bespoke thetis cmd to select tx profile
                         break;
+                    // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-06
+                    // Client query for capability-list. sendCapabilities() self-gates on the
+                    // ThetisLink-extensions checkbox, so when the vink is off this case becomes
+                    // a no-op (matching stock behaviour where the command is unrecognised).
+                    case "tci_caps_ex":
+                        SendCapabilitiesFrame();
+                        break;
+                    // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-28
+                    // Preventive transmit-inhibit (RX-only) — GET form (echo state).
+                    case "rx_only_ex":
+                        handleRxOnlyEx(new string[] { "" });
+                        break;
+                    // [ThetisLink TL2-1] END
+                    // Diversity-basics dispatch (no-args = GET; calls handler with empty arg).
+                    // Sweep and fastsweep are intentionally absent — they require args to be useful.
+                    case "diversity_enable_ex":
+                        handleDiversityEnableEx(new string[] { "" });
+                        break;
+                    case "diversity_source_ex":
+                        handleDiversitySourceEx(new string[] { "" });
+                        break;
+                    case "diversity_ref_ex":
+                        handleDiversityRefEx(new string[] { "" });
+                        break;
+                    case "diversity_phase_ex":
+                        handleDiversityPhaseEx(new string[] { "" });
+                        break;
+                    case "diversity_gain_multi_ex":
+                        handleDiversityGainMultiEx(new string[] { "" });
+                        break;
+                    case "ddc_sample_rate_ex":
+                        handleDdcSampleRateEx(null); // null-args triggers both-RX query
+                        break;
+                    // [ThetisLink TL2-1] END
                 }
             }
         }
@@ -5948,7 +7372,12 @@ namespace Thetis
         private void sendIQSampleRate(int sampleRate)
         {
 			if (sampleRate < 48000) sampleRate = 48000;
-			if (sampleRate > 384000) sampleRate = 384000; // iq can only go up to that
+			// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-07
+			// Defense-in-depth cap: keep stock 384 kHz at vink UIT, allow 1536 kHz at vink AAN.
+			// Direct _console read (no Invoke) — atomic bool, deadlock-safe from any thread.
+			int cap = (_console != null && _console.ThetisLinkExtensionsEnabled) ? 1536000 : 384000;
+			if (sampleRate > cap) sampleRate = cap;
+			// [ThetisLink TL2-1] END
 
 			sendTextFrame("iq_samplerate:" + sampleRate.ToString() + ";");
         }
@@ -6686,6 +8115,14 @@ namespace Thetis
 		private Thread m_purgingThread = null;
 		private List<TCPIPtciSocketListener> m_socketListenersList = null;
         private TCPIPtciSocketListener m_activeTxAudioListener = null;
+		// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-14
+		// Refcount of TCI clients that have claimed auto-recenter ownership via
+		// the `auto_recenter_owner_ex:true;` handshake. >0 means the console-side
+		// smooth-scroll guards stay active (a server is driving recenter via
+		// ZZCN/ZZCO). 0 means console falls back to upstream smooth-scroll so
+		// Thetis remains usable standalone.
+		private int m_recenterOwnerCount = 0;
+		// [ThetisLink TL2-1] END
 		private object m_objLocker = new object();
         private bool m_bSleepingInPurge = false;
 		private bool m_bDelegatesAdded = false;
@@ -6714,6 +8151,27 @@ namespace Thetis
 					return _console;
 			}
 		}
+		// [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-07
+		// Server-level accessor for the ThetisLink-extensions checkbox state, used by
+		// cmaster.cs OnTCIRxIQOutSamples (high-frequency DSP-callback thread) to gate the
+		// IQ-stream rate cap (384 kHz default, 1536 kHz when extensions are enabled).
+		//
+		// CRITICAL: this MUST read `_console` directly. Going through the `console`
+		// property (line 7646) forces a UI-thread Invoke when called from a non-UI thread
+		// — and the cmaster DSP callback IS non-UI. During a runtime DDC-rate change the
+		// UI thread is busy reconfiguring the DSP pipeline; if our DSP-callback accessor
+		// blocks on Invoke at the same time, the two threads deadlock and Thetis crashes.
+		// (Owner-bug 2026-05-07.) Direct field access is safe because bool reads are
+		// atomic on x64 .NET — no Invoke needed for a single-bool snapshot.
+		public bool ThetisLinkExtensionsEnabled
+		{
+			get
+			{
+				return _console != null && _console.ThetisLinkExtensionsEnabled;
+			}
+		}
+		// [ThetisLink TL2-1] END
+
 		public TCPIPtciServer()
 		{
 			Init(DEFAULT_IP_END_POINT);
@@ -7208,7 +8666,116 @@ namespace Thetis
         internal void OnSocketListenerDisconnected(TCPIPtciSocketListener socketListener)
         {
             m_cwController?.DisconnectClient(socketListener);
+            // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-14
+            // Release recenter ownership if this listener was an owner. Covers the
+            // crash / network-drop path where the server never sent `:false;`.
+            if (socketListener != null && socketListener.IsRecenterOwner)
+            {
+                socketListener.SetRecenterOwnerFlag(false);
+                DecrementRecenterOwners();
+            }
+            // [ThetisLink TL2-1] END
         }
+
+        // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-14
+        // Broadcast the S9 frequency threshold to every connected listener.
+        // Called by Console when the user changes S9Frequency in Setup so the
+        // TL-server can re-evaluate the band-shift on the very next S-meter
+        // tick instead of waiting for the next session restart.
+        internal void BroadcastS9Frequency(double mhz)
+        {
+            lock (m_objLocker)
+            {
+                if (m_socketListenersList == null) return;
+                foreach (var listener in m_socketListenersList)
+                {
+                    if (listener == null || listener.IsDisconnected()) continue;
+                    try { listener.PushS9Frequency(mhz); }
+                    catch { /* best-effort; never let one listener block the others */ }
+                }
+            }
+        }
+        // [ThetisLink TL2-1] END
+
+        // [ThetisLink TL2-3] BEGIN — modification by PA3GHM (cjenschede), 2026-05-29
+        // Broadcast a "Receive only" state-change to every connected listener.
+        // Called by console.RXOnly setter on every real transition so external
+        // TL-servers see operator-driven Setup toggles in real time (not only
+        // on TCI SET/GET handler-echoes). Public method name (BroadcastRxOnly)
+        // matches the m_tcpTCIServer?.BroadcastRxOnly(...) call-site in
+        // console.cs.
+        internal void BroadcastRxOnly(bool rxOnly)
+        {
+            lock (m_objLocker)
+            {
+                if (m_socketListenersList == null) return;
+                foreach (var listener in m_socketListenersList)
+                {
+                    if (listener == null || listener.IsDisconnected()) continue;
+                    try { listener.PushRxOnlyEx(rxOnly); }
+                    catch { /* best-effort; never let one listener block the others */ }
+                }
+            }
+        }
+        // [ThetisLink TL2-3] END
+
+        // [ThetisLink TL2-4] BEGIN — modification by PA3GHM (cjenschede), 2026-06-03
+        // Broadcast a rx_filter_band frame to every connected listener after a
+        // TCI-driven mode-switch. Stock Thetis fires no rx_filter_band notify
+        // when handleModulationMessage sets the DSPMode; this central fan-out
+        // is invoked from handleModulationMessage so that ALL TCI clients
+        // (not just the one originating the MODULATION command) receive the
+        // updated filter-grenzen. rx is 0-based (0=RX1, 1=RX2) per existing
+        // sendFilterBand convention.
+        internal void BroadcastFilterBand(int rx, int low, int high)
+        {
+            lock (m_objLocker)
+            {
+                if (m_socketListenersList == null) return;
+                foreach (var listener in m_socketListenersList)
+                {
+                    if (listener == null || listener.IsDisconnected()) continue;
+                    try { listener.PushFilterBand(rx, low, high); }
+                    catch { /* best-effort; never let one listener block the others */ }
+                }
+            }
+        }
+        // [ThetisLink TL2-4] END
+
+        // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-14
+        // Broadcast a fresh tci_caps_ex frame to every connected listener — called
+        // when ThetisLinkExtensionsEnabled is toggled so the active TL-server drops
+        // its cached caps immediately (without this it keeps acting on stale caps
+        // and continues driving CTUN long after the user disabled extensions).
+        internal void BroadcastCapsRefresh()
+        {
+            lock (m_objLocker)
+            {
+                if (m_socketListenersList == null) return;
+                foreach (var listener in m_socketListenersList)
+                {
+                    if (listener == null || listener.IsDisconnected()) continue;
+                    try { listener.SendCapabilitiesFrame(); }
+                    catch { /* best-effort; never let one listener block the others */ }
+                }
+            }
+        }
+        internal void IncrementRecenterOwners()
+        {
+            int n = System.Threading.Interlocked.Increment(ref m_recenterOwnerCount);
+            if (n == 1 && _console != null) _console.ThetisLinkRecenterOwnerActive = true;
+        }
+        internal void DecrementRecenterOwners()
+        {
+            int n = System.Threading.Interlocked.Decrement(ref m_recenterOwnerCount);
+            if (n <= 0)
+            {
+                // Clamp at zero against double-release races (paranoia).
+                System.Threading.Interlocked.Exchange(ref m_recenterOwnerCount, 0);
+                if (_console != null) _console.ThetisLinkRecenterOwnerActive = false;
+            }
+        }
+        // [ThetisLink TL2-1] END
 
         internal void OnCwMacrosEmpty(int rx)
         {

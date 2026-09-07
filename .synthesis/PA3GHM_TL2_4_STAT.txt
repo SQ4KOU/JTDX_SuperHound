@@ -1,0 +1,19 @@
+ .gitignore                                         |    4 +
+ ATTRIBUTION.md                                     |   73 +
+ NOTICE.md                                          |   57 +
+ .../Source/ChannelMaster/ChannelMaster.vcxproj     |   15 +-
+ Project Files/Source/Console/DiversityForm.cs      |   95 +-
+ Project Files/Source/Console/TCIServer.cs          | 1547 +++++++++++++++++++-
+ Project Files/Source/Console/Thetis.csproj         |    7 +
+ Project Files/Source/Console/cmaster.cs            |   23 +-
+ Project Files/Source/Console/console.cs            |  186 ++-
+ Project Files/Source/Console/frmAbout.Designer.cs  |   19 +-
+ Project Files/Source/Console/setup.cs              |   18 +
+ Project Files/Source/Console/setup.designer.cs     |   47 +-
+ Project Files/Source/Console/titlebar.cs           |   15 +
+ Project Files/Source/ReleaseNotes.txt              |   90 ++
+ Project Files/Source/cmASIO/cmASIO.vcxproj         |   15 +-
+ Project Files/Source/wdsp/wdsp.vcxproj             |   15 +-
+ .../portaudio-19.7.0/build/msvc/portaudio.vcxproj  |   15 +-
+ ReadMe.md                                          |  233 ++-
+ 18 files changed, 2270 insertions(+), 204 deletions(-)
