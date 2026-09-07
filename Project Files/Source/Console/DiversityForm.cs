@@ -38,6 +38,14 @@
 // its original terms and is not affected by this dual-licensing statement in any way.        //
 // Richard Samphire can be reached by email at :  mw0lge@grange-lane.co.uk                    //
 //============================================================================================//
+//
+//================================================================================================//
+// SPDX-License-Identifier: GPL-2.0-or-later                                                       //
+// ThetisLink TL2-1 fork modifications by PA3GHM (cjenschede), starting 2026-05-07.                //
+// Adds a public DiversityGainMulti property so the TCI command `diversity_gain_multi_ex` can      //
+// read/write the form's `udGainMulti` value (which gates `udR1.Maximum` / `udR2.Maximum`).        //
+// See NOTICE.md and ATTRIBUTION.md in the repository root for fork details.                       //
+//================================================================================================//
 
 using System;
 using System.Diagnostics;
@@ -2310,6 +2318,23 @@ namespace Thetis
             }
             get { return udR2.Value; }      // added 31/3/2018 G8NJJ to allow access by CAT commands
         }
+
+        // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-07
+        // Public accessor for the GainMulti spinner so the TCI command `diversity_gain_multi_ex`
+        // can read/write it from outside the form. Range-clamps to the spinner's own
+        // Minimum / Maximum (1.0 .. 10.0). Writing triggers udGainMulti_ValueChanged which in
+        // turn updates udR1.Maximum / udR2.Maximum (= the gain-clamp).
+        public decimal DiversityGainMulti
+        {
+            get { return udGainMulti.Value; }
+            set
+            {
+                decimal v = Math.Min(value, udGainMulti.Maximum);
+                v = Math.Max(v, udGainMulti.Minimum);
+                udGainMulti.Value = v;
+            }
+        }
+        // [ThetisLink TL2-1] END
 
         public decimal DiversityPhase
         {

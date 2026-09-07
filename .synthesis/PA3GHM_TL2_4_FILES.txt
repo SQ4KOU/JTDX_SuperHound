@@ -1,0 +1,18 @@
+M	.gitignore
+A	ATTRIBUTION.md
+A	NOTICE.md
+M	Project Files/Source/ChannelMaster/ChannelMaster.vcxproj
+M	Project Files/Source/Console/DiversityForm.cs
+M	Project Files/Source/Console/TCIServer.cs
+M	Project Files/Source/Console/Thetis.csproj
+M	Project Files/Source/Console/cmaster.cs
+M	Project Files/Source/Console/console.cs
+M	Project Files/Source/Console/frmAbout.Designer.cs
+M	Project Files/Source/Console/setup.cs
+M	Project Files/Source/Console/setup.designer.cs
+M	Project Files/Source/Console/titlebar.cs
+M	Project Files/Source/ReleaseNotes.txt
+M	Project Files/Source/cmASIO/cmASIO.vcxproj
+M	Project Files/Source/wdsp/wdsp.vcxproj
+M	Project Files/lib/portaudio-19.7.0/build/msvc/portaudio.vcxproj
+M	ReadMe.md

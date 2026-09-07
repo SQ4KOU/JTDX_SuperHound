@@ -38,6 +38,13 @@ mw0lge@grange-lane.co.uk
 // its original terms and is not affected by this dual-licensing statement in any way.        //
 // Richard Samphire can be reached by email at :  mw0lge@grange-lane.co.uk                    //
 //============================================================================================//
+//
+//================================================================================================//
+// SPDX-License-Identifier: GPL-2.0-or-later                                                       //
+// ThetisLink TL2-1 fork modifications by PA3GHM (cjenschede), starting 2026-05-07.                //
+// Relaxes the TCI IQ-stream rate cap from 384 kHz to 1536 kHz when ThetisLink-extensions          //
+// is enabled. Stock cap stays in effect when extensions are off. See NOTICE.md / ATTRIBUTION.md.  //
+//================================================================================================//
 
 using System;
 using System.Collections.Generic;
@@ -525,7 +532,12 @@ namespace Thetis
         unsafe private static void* m_tciTxResampler = null;
         private const int TCI_TX_MAX_OUTSTANDING = 64;
         private const int TCI_TX_EXTRA_BUFFER_MS = 50;
-        private const int TCI_MAX_IQ_STREAM_RATE = 384000;
+        // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-07
+        // Stock single cap split into standard (vink UIT) and extended (vink AAN). The
+        // extended cap matches the hardware ceiling configured in SetRadioStructure (1536000).
+        private const int TCI_STANDARD_IQ_STREAM_RATE = 384000;
+        private const int TCI_EXTENDED_IQ_STREAM_RATE = 1536000;
+        // [ThetisLink TL2-1] END
         private const int TCI_MAX_POOLED_BLOCKS = 64;
         private const int TCI_MAX_POOLED_BUFFERS_PER_SIZE = 32;
         private static volatile bool m_runTCIStreamThreads = false;
@@ -1788,7 +1800,12 @@ namespace Thetis
             if (tciServer == null || data == null || nsamples <= 0) return;
 
             int inputRate = GetInputRate(0, id);
-            int outputRate = inputRate > TCI_MAX_IQ_STREAM_RATE ? TCI_MAX_IQ_STREAM_RATE : inputRate;
+            // [ThetisLink TL2-1] BEGIN — modification by PA3GHM (cjenschede), 2026-05-07
+            // Cap selected per ThetisLinkExtensionsEnabled: vink UIT keeps the stock 384 kHz
+            // ceiling; vink AAN allows up to 1536 kHz hardware DDC rate to flow over TCI.
+            int maxIqRate = tciServer.ThetisLinkExtensionsEnabled ? TCI_EXTENDED_IQ_STREAM_RATE : TCI_STANDARD_IQ_STREAM_RATE;
+            int outputRate = inputRate > maxIqRate ? maxIqRate : inputRate;
+            // [ThetisLink TL2-1] END
             bool iqSwap = tciServer.IQSwap;
             float[] iq = rentTCIFloatBuffer(nsamples * 2);
             for (int i = 0; i < nsamples; i++)
@@ -1797,7 +1814,7 @@ namespace Thetis
                 iq[2 * i + 1] = iqSwap ? (float)-data[2 * i + 1] : (float)data[2 * i + 1];
             }
 
-            if (inputRate > TCI_MAX_IQ_STREAM_RATE)
+            if (inputRate > maxIqRate)
             {
                 float[] resampled = resampleTCIIQSamples(id, iq, inputRate, outputRate);
                 if (!object.ReferenceEquals(resampled, iq))
