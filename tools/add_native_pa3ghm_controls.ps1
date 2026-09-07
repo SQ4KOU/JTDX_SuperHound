@@ -32,25 +32,32 @@ if (-not $div.Contains('NATIVE_PA3GHM_DIVERSITY_PANEL')) {
 
 $setup = Read-Utf8 $setupPath
 if (-not $setup.Contains('NATIVE_PA3GHM_SETUP_CONTROLS')) {
-    $anchor = "            console = c;`r`n            this.Owner = c;"
-    if (-not $setup.Contains($anchor)) {
-        $anchor = "            console = c;`n            this.Owner = c;"
-    }
-    if (-not $setup.Contains($anchor)) { throw 'Cannot locate Setup console assignment anchor' }
+    $pattern = '            console = c;\r?\n            this\.Owner = c;'
+    if (-not [regex]::IsMatch($setup, $pattern)) { throw 'Cannot locate Setup console assignment anchor' }
     $replacement = "            console = c;`r`n            // NATIVE_PA3GHM_SETUP_CONTROLS`r`n            InitPA3GHMNativeSetupControls();`r`n            this.Owner = c;"
-    $setup = $setup.Replace($anchor, $replacement)
+    $setup = [regex]::Replace($setup, $pattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $replacement }, 1)
     Write-Utf8Bom $setupPath $setup
 }
 
 $proj = Read-Utf8 $projPath
 if (-not $proj.Contains('PA3GHMNativeDiversity.cs')) {
-    $anchor = "    <Compile Include=\"DiversityForm.cs\">`r`n      <SubType>Form</SubType>`r`n    </Compile>"
-    if (-not $proj.Contains($anchor)) {
-        $anchor = "    <Compile Include=\"DiversityForm.cs\">`n      <SubType>Form</SubType>`n    </Compile>"
-    }
-    if (-not $proj.Contains($anchor)) { throw 'Cannot locate DiversityForm compile item in Thetis.csproj' }
-    $addition = $anchor + "`r`n    <Compile Include=\"DiversityForm.PA3GHMNative.cs\">`r`n      <DependentUpon>DiversityForm.cs</DependentUpon>`r`n    </Compile>`r`n    <Compile Include=\"PA3GHMNativeDiversity.cs\" />`r`n    <Compile Include=\"Setup.PA3GHMNative.cs\">`r`n      <DependentUpon>setup.cs</DependentUpon>`r`n    </Compile>"
-    $proj = $proj.Replace($anchor, $addition)
+    $pattern = '(?ms)^\s*<Compile Include="DiversityForm\.cs">\s*<SubType>Form</SubType>\s*</Compile>'
+    $match = [regex]::Match($proj, $pattern)
+    if (-not $match.Success) { throw 'Cannot locate DiversityForm compile item in Thetis.csproj' }
+
+    $addition = @'
+    <Compile Include="DiversityForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="DiversityForm.PA3GHMNative.cs">
+      <DependentUpon>DiversityForm.cs</DependentUpon>
+    </Compile>
+    <Compile Include="PA3GHMNativeDiversity.cs" />
+    <Compile Include="Setup.PA3GHMNative.cs">
+      <DependentUpon>setup.cs</DependentUpon>
+    </Compile>
+'@
+    $proj = $proj.Substring(0, $match.Index) + $addition + $proj.Substring($match.Index + $match.Length)
     Write-Utf8Bom $projPath $proj
 }
 
