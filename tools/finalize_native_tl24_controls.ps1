@@ -33,7 +33,7 @@ if ($oldCount -eq 4 -and $newCount -eq 0) {
     $console = $console.Replace($oldGate, $newGate)
     Write-Utf8Bom $consolePath $console
 }
-elif ($oldCount -eq 0 -and $newCount -eq 4) {
+elseif ($oldCount -eq 0 -and $newCount -eq 4) {
     # already integrated
 }
 else {
