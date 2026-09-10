@@ -44,9 +44,10 @@ endif ()
     '''if (WIN32 AND JTDX_ENABLE_OMNIRIG)
   # Generate the native JTDX OmniRig ActiveQt interface. An explicit server
   # file avoids the 32/64-bit registry-view ambiguity of dumpcpp -getfile.
-  find_program (DUMPCPP dumpcpp)
+  # Current MSYS2 Qt5 names the tool dumpcpp-qt5.exe.
+  find_program (DUMPCPP NAMES dumpcpp-qt5 dumpcpp)
   if (DUMPCPP-NOTFOUND)
-    message (FATAL_ERROR "dumpcpp tool not found")
+    message (FATAL_ERROR "Qt5 ActiveQt dumpcpp tool not found")
   endif (DUMPCPP-NOTFOUND)
   set (JTDX_OMNIRIG_SERVER "" CACHE FILEPATH "Path to OmniRig.exe/type library for ActiveQt wrapper generation")
   if (JTDX_OMNIRIG_SERVER)
@@ -68,6 +69,7 @@ endif ()
   endif ()
   file (TO_CMAKE_PATH "${AXSERVER}" AXSERVERSRCS)
   message (STATUS "OmniRig ActiveQt server: ${AXSERVERSRCS}")
+  message (STATUS "OmniRig ActiveQt dumpcpp: ${DUMPCPP}")
 endif ()
 ''',
     'CMake deterministic OmniRig ActiveQt server path')
@@ -97,7 +99,7 @@ if new_flag not in b:
     b = b.replace(old_flag, new_flag, 1)
 
 old_tools = 'for t in git gcc g++ gfortran cmake ninja autoconf automake libtoolize make pkg-config patch qmake-qt5 lrelease-qt5; do\n'
-new_tools = 'for t in git gcc g++ gfortran cmake ninja autoconf automake libtoolize make pkg-config patch qmake-qt5 lrelease-qt5 dumpcpp; do\n'
+new_tools = 'for t in git gcc g++ gfortran cmake ninja autoconf automake libtoolize make pkg-config patch qmake-qt5 lrelease-qt5 dumpcpp-qt5; do\n'
 if new_tools not in b:
     if b.count(old_tools) != 1:
         raise SystemExit(f'[FAIL] build-tool gate anchor count={b.count(old_tools)}')
@@ -117,6 +119,7 @@ if [ ! -f "$OMNIRIG_SERVER_MSYS" ]; then
 fi
 OMNIRIG_SERVER_WIN="$(cygpath -m "$OMNIRIG_SERVER_MSYS")"
 echo "[PASS] OmniRig ActiveQt server file: $OMNIRIG_SERVER_WIN"
+echo "[PASS] Qt5 ActiveQt dumpcpp tool: $(command -v dumpcpp-qt5)"
 
 rm -rf jtdx/build-superhound
 cmake -S jtdx -B jtdx/build-superhound -G Ninja \\
@@ -190,8 +193,9 @@ bp.write_text(b, encoding='utf-8', newline='\n')
 for needle in [
     '-DJTDX_ENABLE_OMNIRIG=ON',
     '-DJTDX_OMNIRIG_SERVER="$OMNIRIG_SERVER_WIN"',
-    'lrelease-qt5 dumpcpp',
+    'lrelease-qt5 dumpcpp-qt5',
     '[PASS] OmniRig ActiveQt server file:',
+    '[PASS] Qt5 ActiveQt dumpcpp tool:',
     'JTDX_ENABLE_OMNIRIG:BOOL=ON',
     'JTDX_OMNIRIG_SERVER:FILEPATH=',
     'OmniRigTransceiver.cpp',
@@ -204,6 +208,7 @@ for needle in [
 for needle in [
     '# SQ4KOU OmniRig x64: deterministic ActiveQt server path.',
     'JTDX_OMNIRIG_SERVER',
+    'dumpcpp-qt5',
     'CMake deterministic OmniRig ActiveQt server path',
 ]:
     if needle not in p:
