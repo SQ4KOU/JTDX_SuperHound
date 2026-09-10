@@ -64,6 +64,7 @@ jobs:
           python -m py_compile "$env:FINAL_ROOT\patch_superhound.py"
           python -m py_compile "$env:GITHUB_WORKSPACE\jtdx-final\apply_omnirig_overlay.py"
           $builder="$env:FINAL_ROOT\BUILD_JTDX_SUPERHOUND_MSI.ps1"
+          $patcher="$env:FINAL_ROOT\patch_superhound.py"
           $text=[IO.File]::ReadAllText($builder)
           $old="'--foreground','--signal=TERM','180s',"
           $new="'--foreground','--signal=TERM','1800s',"
@@ -72,16 +73,21 @@ jobs:
           [IO.File]::WriteAllText($builder,$text)
           foreach($needle in @(
             '-DJTDX_ENABLE_OMNIRIG=ON',
+            '-DJTDX_OMNIRIG_SERVER="$OMNIRIG_SERVER_WIN"',
             'lrelease-qt5 dumpcpp',
-            '[PASS] OmniRig COM type library:',
+            '[PASS] OmniRig ActiveQt server file:',
+            '[PASS] OmniRig ActiveQt wrapper generation gate',
             "MSI_VERSION='2.2.177'",
             "MSI_NAME='JTDX-SuperHound-2.2.159-FINAL-TCI-BANDSAFE-OMNIRIG-win64'"
           )) {
             if(-not (Select-String -Path $builder -SimpleMatch $needle -Quiet)){throw "Missing OmniRig builder gate: $needle"}
           }
+          foreach($needle in @('JTDX_OMNIRIG_SERVER','CMake deterministic OmniRig ActiveQt server path')) {
+            if(-not (Select-String -Path $patcher -SimpleMatch $needle -Quiet)){throw "Missing OmniRig source patch gate: $needle"}
+          }
           Write-Host 'OMNIRIG_OVERLAY=PASS'
 
-      - name: Install official OmniRig runtime
+      - name: Install and verify official OmniRig runtime
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -99,6 +105,26 @@ jobs:
           if(-not (Test-Path $setup)){throw 'OmniRigSetup.exe missing from official package'}
           $p=Start-Process -FilePath $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -Wait -PassThru
           if($p.ExitCode -ne 0){throw "OmniRig installer exit code $($p.ExitCode)"}
+
+          $server='C:\Program Files (x86)\Afreet\OmniRig\OmniRig.exe'
+          if(-not (Test-Path $server)) {
+            $server='C:\Program Files\Afreet\OmniRig\OmniRig.exe'
+          }
+          if(-not (Test-Path $server)){throw 'Installed OmniRig.exe not found'}
+          Write-Host "OMNIRIG_SERVER=$server"
+          Write-Host "OMNIRIG_SERVER_SHA256=$((Get-FileHash $server -Algorithm SHA256).Hash)"
+
+          $omni=$null
+          try {
+            $omni=New-Object -ComObject 'OmniRig.OmniRigX'
+            if($null -eq $omni){throw 'COM activation returned null'}
+            Write-Host "OMNIRIG_COM_TYPE=$($omni.GetType().FullName)"
+            Write-Host 'OMNIRIG_COM64=PASS'
+          }
+          finally {
+            if($null -ne $omni){[Runtime.InteropServices.Marshal]::FinalReleaseComObject($omni) | Out-Null}
+          }
+          "SH_OMNIRIG_SERVER_WIN=$server" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host 'OMNIRIG_RUNTIME_INSTALL=PASS'
 
       - name: Setup MSYS2 MINGW64
@@ -127,16 +153,20 @@ jobs:
             mingw-w64-x86_64-qt5-tools
             mingw-w64-x86_64-qt5-websockets
 
-      - name: Verify OmniRig COM through Qt dumpcpp
+      - name: Verify direct ActiveQt wrapper generation
         shell: msys2 {0}
         run: |
-          set -e
+          set -euo pipefail
           export PATH="/mingw64/bin:/usr/bin:$PATH"
           command -v dumpcpp
-          AXSERVER="$(dumpcpp -getfile {4FE359C5-A58F-459D-BE95-CA559FB4F270} | tr -d '\r')"
-          test -n "$AXSERVER"
-          echo "OMNIRIG_AXSERVER=$AXSERVER"
-          echo 'OMNIRIG_DUMPCPP_DISCOVERY=PASS'
+          SERVER="$(cygpath -u "$SH_OMNIRIG_SERVER_WIN")"
+          test -s "$SERVER"
+          TMP="$(mktemp -d)"
+          dumpcpp -o "$TMP/OmniRig" "$SERVER"
+          test -s "$TMP/OmniRig.h"
+          test -s "$TMP/OmniRig.cpp"
+          grep -Fq 'class OmniRigX' "$TMP/OmniRig.h"
+          echo 'OMNIRIG_DUMPCPP_DIRECT=PASS'
 
       - name: Export CMake paths
         shell: powershell
@@ -178,10 +208,13 @@ jobs:
             if(-not (Select-String -Path $omni -SimpleMatch $needle -Quiet)){throw "Missing OmniRig backend gate: $needle"}
           }
           if(-not (Select-String -Path $cache -SimpleMatch 'JTDX_ENABLE_OMNIRIG:BOOL=ON' -Quiet)){throw 'OmniRig CMake cache is not ON'}
+          if(-not (Select-String -Path $cache -SimpleMatch 'JTDX_OMNIRIG_SERVER:FILEPATH=' -Quiet)){throw 'OmniRig explicit server path missing from cache'}
           if(-not (Select-String -Path $ninja -SimpleMatch 'OmniRigTransceiver.cpp' -Quiet)){throw 'OmniRig source absent from Ninja graph'}
           if(-not (Select-String -Path $ninja -SimpleMatch 'JTDX_ENABLE_OMNIRIG' -Quiet)){throw 'OmniRig compile definition absent from Ninja graph'}
-          $gen=Get-ChildItem "$src\build-superhound" -Recurse -Filter OmniRig.h | Select-Object -First 1
-          if(-not $gen){throw 'Generated OmniRig.h missing'}
+          $genH=Get-ChildItem "$src\build-superhound" -Recurse -Filter OmniRig.h | Select-Object -First 1
+          $genC=Get-ChildItem "$src\build-superhound" -Recurse -Filter OmniRig.cpp | Select-Object -First 1
+          if(-not $genH){throw 'Generated OmniRig.h missing'}
+          if(-not $genC){throw 'Generated OmniRig.cpp missing'}
           foreach($needle in @(
             'err_index >= 0 && err_index < errortable.size()',
             'band_change = !HPSDR &&',
@@ -190,7 +223,8 @@ jobs:
           )) {
             if(-not (Select-String -Path $tci -SimpleMatch $needle -Quiet)){throw "Missing retained BANDSAFE gate: $needle"}
           }
-          Write-Host "OMNIRIG_GENERATED_HEADER=$($gen.FullName)"
+          Write-Host "OMNIRIG_GENERATED_HEADER=$($genH.FullName)"
+          Write-Host "OMNIRIG_GENERATED_SOURCE=$($genC.FullName)"
           Write-Host 'OMNIRIG_SOURCE_BUILD_AUDIT=PASS'
           Write-Host 'TCI_BANDSAFE_RETENTION_AUDIT=PASS'
 
@@ -207,8 +241,9 @@ jobs:
             "FINAL_MSI_SIZE=$($msi.Length)",
             "FINAL_MSI_SHA256=$sha",
             "OMNIRIG_SOURCE_BUILD_AUDIT=PASS",
+            "OMNIRIG_COM64=PASS",
             "TCI_BANDSAFE_RETENTION_AUDIT=PASS",
-            "OMNIRIG_RUNTIME_REQUIRED=OmniRig 1.20 or compatible COM server"
+            "OMNIRIG_RUNTIME_REQUIRED=OmniRig 1.20 or compatible v1 COM server"
           ) | Set-Content "$env:FINAL_ROOT\OUTPUT\OMNIRIG_BUILD_INFO.txt" -Encoding UTF8
           Write-Host "FINAL_MSI=$($msi.Name)"
           Write-Host "FINAL_MSI_SIZE=$($msi.Length)"
