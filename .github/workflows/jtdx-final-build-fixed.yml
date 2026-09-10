@@ -1,0 +1,198 @@
+name: JTDX FINAL Windows Build FIXED
+
+on:
+  push:
+    branches:
+      - jtdx-final-build-2
+    paths:
+      - '.github/workflows/jtdx-final-build-fixed.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout build branch
+        uses: actions/checkout@v4
+
+      - name: Reconstruct and verify FINAL bundle
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = "$env:GITHUB_WORKSPACE\jtdx-final"
+          function Read-Part([string[]]$names) {
+            $s = ''
+            foreach ($name in $names) {
+              $p = Join-Path $dir $name
+              if (-not (Test-Path $p)) { throw "Missing bundle fragment: $p" }
+              $s += [IO.File]::ReadAllText($p).Trim()
+            }
+            return $s
+          }
+
+          $expectedPartSha = @{
+            0='9adbb4e2835c2d55a76bb7402638663e0e1e02f5'; 1='6dc0fe18760d8be0c8f87f1f2c2bf910a54b0142';
+            2='98707e1026bdf25d5d679ac3dbf4a678494ed556'; 3='24e7d915afec316dd45faaca8d816cb1dfbbc33f';
+            4='587e5349d5e1208b3e857179ec9c43249cc1703e'; 5='7598923e9d6cc6452e44aa32f2fa67880b65eb5d';
+            6='d3914a8e00d3195f194b822d22ba740a5da09c74'; 7='d8b46227f544e0f7a430330c624fe0af391e1485';
+            8='aff4b5a08dd35c104b1d6889e69ce9ead233bf21'; 9='57b50a6fe1f2505b316b8315098debfa7d392fb9';
+            10='174ed9360d69893567bc77d3817fbdee7870d98d'; 11='85643e04862a23c9546b7e75e208871308b881f9';
+            12='3c6e036e30fbdf18a82e2eec3e416f64e5fff85d'; 13='36b8b1879d9b0b4bbe7eb1ff490ad82baaa61fc7'
+          }
+
+          $b64 = ''
+          for ($i = 0; $i -lt 14; $i++) {
+            if ($i -eq 6) {
+              $part = Read-Part @('fix06.0.0','fix06.0.1.0','fix06.0.1.1','fix06.1','fix06.2','fix06.3')
+            } elseif ($i -eq 7) {
+              $part = Read-Part @('fix07.0','fix07.1','fix07.2','fix07.3.0','fix07.3.1')
+            } elseif ($i -eq 12) {
+              $part = Read-Part @('fix12.0','fix12.1','fix12.2','fix12.3')
+            } else {
+              $part = Read-Part @(("bundle.part{0:D2}" -f $i))
+            }
+
+            $expectedLen = if ($i -eq 13) { 704 } else { 8000 }
+            if ($part.Length -ne $expectedLen) { throw "Part $i length mismatch: $($part.Length), expected $expectedLen" }
+
+            $gitHeader = [Text.Encoding]::ASCII.GetBytes("blob $($part.Length)`0")
+            $body = [Text.Encoding]::ASCII.GetBytes($part)
+            $all = New-Object byte[] ($gitHeader.Length + $body.Length)
+            [Array]::Copy($gitHeader,0,$all,0,$gitHeader.Length)
+            [Array]::Copy($body,0,$all,$gitHeader.Length,$body.Length)
+            $sha1 = [Security.Cryptography.SHA1]::Create().ComputeHash($all)
+            $gitSha = -join ($sha1 | ForEach-Object { $_.ToString('x2') })
+            Write-Host "PART_$('{0:D2}' -f $i)_LEN=$($part.Length) GIT_SHA=$gitSha"
+            if ($gitSha -ne $expectedPartSha[$i]) { throw "Part $i Git SHA mismatch: $gitSha" }
+            $b64 += $part
+          }
+
+          if ($b64.Length -ne 104704) { throw "Combined Base64 length mismatch: $($b64.Length)" }
+          $zip = "$env:RUNNER_TEMP\JTDX_SUPERHOUND_MSI_FINAL.zip"
+          [IO.File]::WriteAllBytes($zip, [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "BUNDLE_SHA256=$hash"
+          if ($hash -ne 'c7bafdd622a46dac7730f477b46daf69f821a4b2edc70e27345036e842a1b354') {
+            throw "Bundle SHA256 mismatch: $hash"
+          }
+
+          $dst = "$env:RUNNER_TEMP\jtdx-final"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Expand-Archive -Path $zip -DestinationPath $dst -Force
+          $root = "$dst\JTDX_SUPERHOUND_MSI_FINAL"
+          if (-not (Test-Path "$root\BUILD_JTDX_SUPERHOUND_MSI.ps1")) { throw 'FINAL build script missing' }
+          Write-Host "FINAL_ROOT=$root"
+
+      - name: Setup complete MSYS2 MINGW64 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          location: C:\msys64
+          update: true
+          cache: false
+          install: >-
+            git
+            make
+            patch
+            pkgconf
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-gcc-fortran
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-boost
+            mingw-w64-x86_64-fftw
+            mingw-w64-x86_64-libusb
+            mingw-w64-x86_64-qt5-base
+            mingw-w64-x86_64-qt5-activeqt
+            mingw-w64-x86_64-qt5-multimedia
+            mingw-w64-x86_64-qt5-serialport
+            mingw-w64-x86_64-qt5-tools
+            mingw-w64-x86_64-qt5-websockets
+
+      - name: Verify Qt5 CMake package
+        shell: msys2 {0}
+        run: |
+          set -e
+          test -f /mingw64/lib/cmake/Qt5/Qt5Config.cmake
+          echo "QT5_CONFIG=/mingw64/lib/cmake/Qt5/Qt5Config.cmake"
+
+      - name: Export CMake Qt5 paths
+        shell: powershell
+        run: |
+          "CMAKE_PREFIX_PATH=C:\msys64\mingw64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "Qt5_DIR=C:\msys64\mingw64\lib\cmake\Qt5" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build JTDX SuperHound FINAL MSI
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $root = "$env:RUNNER_TEMP\jtdx-final\JTDX_SUPERHOUND_MSI_FINAL"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$root\BUILD_JTDX_SUPERHOUND_MSI.ps1"
+          $code = $LASTEXITCODE
+          Write-Host "FINAL_BUILDER_EXIT=$code"
+          if ($code -ne 0) { exit $code }
+
+      - name: Dump builder logs on failure
+        if: failure()
+        shell: powershell
+        run: |
+          $root = "$env:RUNNER_TEMP\jtdx-final\JTDX_SUPERHOUND_MSI_FINAL"
+          Write-Host '===== FINAL BUILDER DIAGNOSTICS ====='
+          if (Test-Path "$root\LOGS") {
+            Get-ChildItem "$root\LOGS\*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | ForEach-Object {
+              Write-Host "===== LOG: $($_.FullName) ====="
+              Get-Content $_.FullName -Tail 500 -ErrorAction SilentlyContinue
+            }
+          } else {
+            Write-Host 'LOGS directory not found.'
+          }
+          $work = "$root\WORK"
+          if (Test-Path $work) {
+            Write-Host '===== RECENT BUILD FILES ====='
+            Get-ChildItem $work -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Extension -in '.log','.txt' -or $_.Name -match 'CMakeError|CMakeOutput' } |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 12 | ForEach-Object {
+                Write-Host "===== FILE: $($_.FullName) ====="
+                Get-Content $_.FullName -Tail 250 -ErrorAction SilentlyContinue
+              }
+          }
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JTDX-SuperHound-FINAL-DIAGNOSTICS
+          path: |
+            ${{ runner.temp }}\jtdx-final\JTDX_SUPERHOUND_MSI_FINAL\LOGS\*.log
+            ${{ runner.temp }}\jtdx-final\JTDX_SUPERHOUND_MSI_FINAL\OUTPUT\*.txt
+          if-no-files-found: warn
+
+      - name: Validate FINAL MSI
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = "$env:RUNNER_TEMP\jtdx-final\JTDX_SUPERHOUND_MSI_FINAL"
+          $msi = Get-ChildItem "$root\OUTPUT\JTDX-SuperHound*.msi" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $msi) { throw 'FINAL MSI not found' }
+          if ($msi.Length -lt 1000000) { throw "FINAL MSI too small: $($msi.Length) bytes" }
+          $hash = (Get-FileHash $msi.FullName -Algorithm SHA256).Hash.ToLower()
+          Write-Host "FINAL_MSI=$($msi.Name)"
+          Write-Host "FINAL_MSI_SIZE=$($msi.Length)"
+          Write-Host "FINAL_MSI_SHA256=$hash"
+          @(
+            "FINAL_MSI=$($msi.Name)",
+            "FINAL_MSI_SIZE=$($msi.Length)",
+            "FINAL_MSI_SHA256=$hash"
+          ) | Set-Content "$root\OUTPUT\FINAL_BUILD_INFO.txt" -Encoding UTF8
+
+      - name: Upload FINAL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JTDX-SuperHound-FINAL
+          path: |
+            ${{ runner.temp }}\jtdx-final\JTDX_SUPERHOUND_MSI_FINAL\OUTPUT\*.msi
+            ${{ runner.temp }}\jtdx-final\JTDX_SUPERHOUND_MSI_FINAL\OUTPUT\FINAL_BUILD_INFO.txt
+            ${{ runner.temp }}\jtdx-final\JTDX_SUPERHOUND_MSI_FINAL\LOGS\*.log
+          if-no-files-found: error
