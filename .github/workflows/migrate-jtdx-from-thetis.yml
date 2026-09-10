@@ -1,0 +1,157 @@
+name: Migrate JTDX project from SQ4KOU-THETIS
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/migrate-jtdx-from-thetis.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_REPO: SQ4KOU/SQ4KOU-THETIS
+  SOURCE_COMMIT: c748b98f1ba51314c5a592622adc6bef3f6179c2
+  RELEASE_TAG: jtdx-superhound-2.2.159-bandsafe-2026-09-09
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout destination
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch verified JTDX source state
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none "https://github.com/${SOURCE_REPO}.git" /tmp/source
+          git -C /tmp/source checkout --detach "$SOURCE_COMMIT"
+          test "$(git -C /tmp/source rev-parse HEAD)" = "$SOURCE_COMMIT"
+
+      - name: Copy all JTDX project material
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf jtdx-final jtdx-final-corrections jtdx-final-payload
+          cp -a /tmp/source/jtdx-final ./
+          cp -a /tmp/source/jtdx-final-corrections ./
+          cp -a /tmp/source/jtdx-final-payload ./
+          mkdir -p .github/workflows
+          find .github/workflows -maxdepth 1 -type f -name 'jtdx-*.yml' -delete
+          cp -a /tmp/source/.github/workflows/jtdx-*.yml .github/workflows/
+
+          # Preserve any other JTDX/SuperHound-named files outside the three project trees.
+          while IFS= read -r rel; do
+            case "$rel" in
+              jtdx-final/*|jtdx-final-corrections/*|jtdx-final-payload/*|.github/workflows/jtdx-*.yml) continue ;;
+            esac
+            low="$(printf '%s' "$rel" | tr '[:upper:]' '[:lower:]')"
+            if [[ "$low" == *jtdx* || "$low" == *superhound* ]]; then
+              mkdir -p "$(dirname "$rel")"
+              cp -a "/tmp/source/$rel" "$rel"
+            fi
+          done < <(git -C /tmp/source ls-tree -r --name-only "$SOURCE_COMMIT")
+
+      - name: Write migration provenance
+        shell: bash
+        run: |
+          cat > MIGRATION.md <<'EOF'
+          # JTDX / SuperHound migration provenance
+
+          This repository contains the JTDX/SuperHound work previously stored in `SQ4KOU/SQ4KOU-THETIS`.
+
+          ## Verified final source state
+          - Source repository: `SQ4KOU/SQ4KOU-THETIS`
+          - Final JTDX source/build commit: `c748b98f1ba51314c5a592622adc6bef3f6179c2`
+          - Final release tag: `jtdx-superhound-2.2.159-bandsafe-2026-09-09`
+          - Final MSI: `JTDX-SuperHound-2.2.159-FINAL-TCI-BANDSAFE-win64.msi`
+          - MSI SHA-256: `30c1647993e8f2ca99b2e29ed34a37da1ae6f24fdc1d64f9a08651b3d2031d45`
+
+          ## Previous JTDX working refs retained as provenance
+          - `jtdx-final-build` -> `b59e866de5dafdb8c380bebb11b1a41cf665785f`
+          - `jtdx-final-build-2` -> `0cc998aa51abd3943193e8a66a35fa3f6c2b40cd`
+          - `jtdx-superhound-p1-ci` -> `db20b49f8a2131aaf64e959410f98fe8f4c28f95`
+
+          The unrelated Thetis/ESP32/Red Pitaya project tree and its history were deliberately not imported.
+          EOF
+
+          cat > README.md <<'EOF'
+          # JTDX_SuperHound
+
+          Dedicated SQ4KOU repository for JTDX / Super Hound development.
+
+          Current baseline: **JTDX 2.2.159 — FINAL TCI BANDSAFE**.
+
+          Included here are the complete JTDX working payloads, correction payloads, overlay/build scripts and JTDX-specific GitHub Actions workflows migrated from `SQ4KOU/SQ4KOU-THETIS` at verified commit `c748b98f1ba51314c5a592622adc6bef3f6179c2`.
+
+          The final Windows x64 MSI and checksum are published under Releases.
+
+          See `MIGRATION.md` for provenance and previous working refs.
+          EOF
+
+      - name: Commit migrated project
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This one-shot migration workflow must not remain part of the destination project.
+          rm -f .github/workflows/migrate-jtdx-from-thetis.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --stat
+          git commit -m "Migrate complete JTDX SuperHound project from SQ4KOU-THETIS"
+          git push origin HEAD:main
+
+      - name: Verify migrated trees and workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          for d in jtdx-final jtdx-final-corrections jtdx-final-payload; do
+            test -d "$d"
+            diff -qr "/tmp/source/$d" "$d"
+          done
+          for f in /tmp/source/.github/workflows/jtdx-*.yml; do
+            b="$(basename "$f")"
+            cmp "$f" ".github/workflows/$b"
+          done
+          echo "JTDX migration content verification: PASS"
+
+      - name: Recreate final release in destination repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/release
+          curl -fL --retry 3 -o /tmp/release/JTDX-SuperHound-2.2.159-FINAL-TCI-BANDSAFE-win64.msi \
+            "https://github.com/${SOURCE_REPO}/releases/download/${RELEASE_TAG}/JTDX-SuperHound-2.2.159-FINAL-TCI-BANDSAFE-win64.msi"
+          curl -fL --retry 3 -o /tmp/release/SHA256SUMS-JTDX-BANDSAFE.txt \
+            "https://github.com/${SOURCE_REPO}/releases/download/${RELEASE_TAG}/SHA256SUMS-JTDX-BANDSAFE.txt"
+          echo "30c1647993e8f2ca99b2e29ed34a37da1ae6f24fdc1d64f9a08651b3d2031d45  /tmp/release/JTDX-SuperHound-2.2.159-FINAL-TCI-BANDSAFE-win64.msi" | sha256sum -c -
+
+          cat > /tmp/release-notes.md <<'EOF'
+          ## JTDX SuperHound 2.2.159 — FINAL TCI BANDSAFE
+
+          Verified Windows x64 build based on JTDX 2.2.159 with the SQ4KOU SuperHound/FT2 integration.
+
+          Included: SuperHound receive/decode integration, FT2 integration, integrated monitor, TCI watchdog/reconnect and fail-safe TX handling, TCI BANDSAFE hardening, malformed/short-frame handling, RX/TX VFO request coalescing, safe reconnect/teardown handling, and the JT9 shutdown return-code fix.
+
+          Original verified source/build commit in `SQ4KOU/SQ4KOU-THETIS`: `c748b98f1ba51314c5a592622adc6bef3f6179c2`.
+          Original successful build run: `34385192471`.
+          MSI size: `45053934` bytes.
+          MSI SHA-256: `30c1647993e8f2ca99b2e29ed34a37da1ae6f24fdc1d64f9a08651b3d2031d45`.
+          EOF
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" /tmp/release/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE_TAG" /tmp/release/* \
+              --repo "$GITHUB_REPOSITORY" --target main \
+              --title "JTDX SuperHound 2.2.159 — FINAL TCI BANDSAFE" \
+              --notes-file /tmp/release-notes.md
+          fi
+          echo "Release migration: PASS"
