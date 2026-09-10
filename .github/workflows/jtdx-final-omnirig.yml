@@ -105,23 +105,18 @@ jobs:
           if(-not (Test-Path $setup)){throw 'OmniRigSetup.exe missing from official package'}
           $p=Start-Process -FilePath $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -Wait -PassThru
           if($p.ExitCode -ne 0){throw "OmniRig installer exit code $($p.ExitCode)"}
-
           $server='C:\Program Files (x86)\Afreet\OmniRig\OmniRig.exe'
-          if(-not (Test-Path $server)) {
-            $server='C:\Program Files\Afreet\OmniRig\OmniRig.exe'
-          }
+          if(-not (Test-Path $server)){$server='C:\Program Files\Afreet\OmniRig\OmniRig.exe'}
           if(-not (Test-Path $server)){throw 'Installed OmniRig.exe not found'}
           Write-Host "OMNIRIG_SERVER=$server"
           Write-Host "OMNIRIG_SERVER_SHA256=$((Get-FileHash $server -Algorithm SHA256).Hash)"
-
           $omni=$null
           try {
             $omni=New-Object -ComObject 'OmniRig.OmniRigX'
             if($null -eq $omni){throw 'COM activation returned null'}
             Write-Host "OMNIRIG_COM_TYPE=$($omni.GetType().FullName)"
             Write-Host 'OMNIRIG_COM64=PASS'
-          }
-          finally {
+          } finally {
             if($null -ne $omni){[Runtime.InteropServices.Marshal]::FinalReleaseComObject($omni) | Out-Null}
           }
           "SH_OMNIRIG_SERVER_WIN=$server" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
@@ -154,19 +149,32 @@ jobs:
             mingw-w64-x86_64-qt5-websockets
 
       - name: Verify direct ActiveQt wrapper generation
-        shell: msys2 {0}
+        shell: powershell
         run: |
-          set -euo pipefail
-          export PATH="/mingw64/bin:/usr/bin:$PATH"
-          command -v dumpcpp
-          SERVER="$(cygpath -u "$SH_OMNIRIG_SERVER_WIN")"
-          test -s "$SERVER"
-          TMP="$(mktemp -d)"
-          dumpcpp -o "$TMP/OmniRig" "$SERVER"
-          test -s "$TMP/OmniRig.h"
-          test -s "$TMP/OmniRig.cpp"
-          grep -Fq 'class OmniRigX' "$TMP/OmniRig.h"
-          echo 'OMNIRIG_DUMPCPP_DIRECT=PASS'
+          $ErrorActionPreference='Stop'
+          $dumpcpp='C:\msys64\mingw64\bin\dumpcpp.exe'
+          if(-not (Test-Path $dumpcpp)) {
+            Write-Host 'ActiveQt bin directory:'
+            Get-ChildItem 'C:\msys64\mingw64\bin' -Filter '*dump*' | ForEach-Object { Write-Host $_.FullName }
+            throw "dumpcpp.exe missing: $dumpcpp"
+          }
+          if(-not (Test-Path $env:SH_OMNIRIG_SERVER_WIN)){throw "OmniRig server missing: $env:SH_OMNIRIG_SERVER_WIN"}
+          $tmp=Join-Path $env:RUNNER_TEMP 'omnirig-dumpcpp-direct'
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          $out=Join-Path $tmp 'OmniRig'
+          Write-Host "DUMPCPP=$dumpcpp"
+          Write-Host "DUMPCPP_INPUT=$env:SH_OMNIRIG_SERVER_WIN"
+          & $dumpcpp -o $out $env:SH_OMNIRIG_SERVER_WIN
+          if($LASTEXITCODE -ne 0){throw "dumpcpp exit code $LASTEXITCODE"}
+          $h="$out.h"
+          $c="$out.cpp"
+          if(-not (Test-Path $h)){throw "Generated OmniRig.h missing: $h"}
+          if(-not (Test-Path $c)){throw "Generated OmniRig.cpp missing: $c"}
+          if((Get-Item $h).Length -eq 0 -or (Get-Item $c).Length -eq 0){throw 'Generated OmniRig wrapper is empty'}
+          if(-not (Select-String -Path $h -SimpleMatch 'OmniRigX' -Quiet)){throw 'Generated header does not contain OmniRigX'}
+          Write-Host "OMNIRIG_DUMPCPP_HEADER_SIZE=$((Get-Item $h).Length)"
+          Write-Host "OMNIRIG_DUMPCPP_SOURCE_SIZE=$((Get-Item $c).Length)"
+          Write-Host 'OMNIRIG_DUMPCPP_DIRECT=PASS'
 
       - name: Export CMake paths
         shell: powershell
@@ -192,19 +200,10 @@ jobs:
           $cache="$src\build-superhound\CMakeCache.txt"
           $ninja="$src\build-superhound\build.ninja"
           foreach($p in @($tci,$tf,$omni,$cache,$ninja)){if(-not (Test-Path $p)){throw "Missing audit file: $p"}}
-          foreach($needle in @(
-            'OmniRigTransceiver::register_transceivers',
-            'new OmniRigTransceiver',
-            'defined (JTDX_ENABLE_OMNIRIG)'
-          )) {
+          foreach($needle in @('OmniRigTransceiver::register_transceivers','new OmniRigTransceiver','defined (JTDX_ENABLE_OMNIRIG)')) {
             if(-not (Select-String -Path $tf -SimpleMatch $needle -Quiet)){throw "Missing TransceiverFactory OmniRig gate: $needle"}
           }
-          foreach($needle in @(
-            'Failed to start OmniRig COM server',
-            'OmniRig::OmniRigX',
-            'SetTx',
-            'GetRxFrequency'
-          )) {
+          foreach($needle in @('Failed to start OmniRig COM server','OmniRig::OmniRigX','SetTx','GetRxFrequency')) {
             if(-not (Select-String -Path $omni -SimpleMatch $needle -Quiet)){throw "Missing OmniRig backend gate: $needle"}
           }
           if(-not (Select-String -Path $cache -SimpleMatch 'JTDX_ENABLE_OMNIRIG:BOOL=ON' -Quiet)){throw 'OmniRig CMake cache is not ON'}
@@ -215,12 +214,7 @@ jobs:
           $genC=Get-ChildItem "$src\build-superhound" -Recurse -Filter OmniRig.cpp | Select-Object -First 1
           if(-not $genH){throw 'Generated OmniRig.h missing'}
           if(-not $genC){throw 'Generated OmniRig.cpp missing'}
-          foreach($needle in @(
-            'err_index >= 0 && err_index < errortable.size()',
-            'band_change = !HPSDR &&',
-            'bool const rx_superseded',
-            'bool const tx_superseded'
-          )) {
+          foreach($needle in @('err_index >= 0 && err_index < errortable.size()','band_change = !HPSDR &&','bool const rx_superseded','bool const tx_superseded')) {
             if(-not (Select-String -Path $tci -SimpleMatch $needle -Quiet)){throw "Missing retained BANDSAFE gate: $needle"}
           }
           Write-Host "OMNIRIG_GENERATED_HEADER=$($genH.FullName)"
