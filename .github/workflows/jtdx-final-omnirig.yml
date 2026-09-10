@@ -155,18 +155,26 @@ jobs:
           $ErrorActionPreference='Stop'
           $dumpcpp='C:\msys64\mingw64\bin\dumpcpp-qt5.exe'
           if(-not (Test-Path $dumpcpp)) {
-            Write-Host 'ActiveQt bin directory:'
-            Get-ChildItem 'C:\msys64\mingw64\bin' -Filter '*dump*' | ForEach-Object { Write-Host $_.FullName }
-            throw "dumpcpp-qt5.exe missing: $dumpcpp"
+            Write-Host '[INFO] Dynamic ActiveQt package omitted dumpcpp; installing deterministic qt5-static tool fallback'
+            $bash='C:\msys64\usr\bin\bash.exe'
+            if(-not (Test-Path $bash)){throw "MSYS2 bash missing: $bash"}
+            & $bash -lc 'pacman -S --noconfirm --needed mingw-w64-x86_64-qt5-static'
+            if($LASTEXITCODE -ne 0){throw "qt5-static pacman install exit code $LASTEXITCODE"}
+            $staticDump='C:\msys64\mingw64\qt5-static\bin\dumpcpp.exe'
+            if(-not (Test-Path $staticDump)){throw "qt5-static dumpcpp missing: $staticDump"}
+            Copy-Item -LiteralPath $staticDump -Destination $dumpcpp -Force
+            Write-Host "[PASS] Installed dumpcpp fallback from $staticDump"
           }
+          if(-not (Test-Path $dumpcpp)){throw "dumpcpp tool missing: $dumpcpp"}
           if(-not (Test-Path $env:SH_OMNIRIG_SERVER_WIN)){throw "OmniRig server missing: $env:SH_OMNIRIG_SERVER_WIN"}
+          $env:PATH="C:\msys64\mingw64\bin;$env:PATH"
           $tmp=Join-Path $env:RUNNER_TEMP 'omnirig-dumpcpp-direct'
           New-Item -ItemType Directory -Force -Path $tmp | Out-Null
           $out=Join-Path $tmp 'OmniRig'
           Write-Host "DUMPCPP=$dumpcpp"
           Write-Host "DUMPCPP_INPUT=$env:SH_OMNIRIG_SERVER_WIN"
           & $dumpcpp -o $out $env:SH_OMNIRIG_SERVER_WIN
-          if($LASTEXITCODE -ne 0){throw "dumpcpp-qt5 exit code $LASTEXITCODE"}
+          if($LASTEXITCODE -ne 0){throw "dumpcpp exit code $LASTEXITCODE"}
           $h="$out.h"
           $c="$out.cpp"
           if(-not (Test-Path $h)){throw "Generated OmniRig.h missing: $h"}
