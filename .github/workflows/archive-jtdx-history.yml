@@ -1,0 +1,60 @@
+name: Archive historical JTDX work
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/archive-jtdx-history.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Copy historical JTDX-only artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/SQ4KOU/SQ4KOU-THETIS.git /tmp/source
+
+          git -C /tmp/source checkout --detach 0ad15a1fbe66759f23800b399664d132f3b9cd2c
+          rm -rf history/jtdx-final-build
+          mkdir -p history/jtdx-final-build/workflows
+          cp -a /tmp/source/jtdx-final history/jtdx-final-build/
+          cp -a /tmp/source/.github/workflows/jtdx-final-build.yml history/jtdx-final-build/workflows/
+          test "$(git -C /tmp/source rev-parse HEAD)" = "0ad15a1fbe66759f23800b399664d132f3b9cd2c"
+          test "$(git -C /tmp/source rev-parse HEAD:jtdx-final)" = "8217dfc57b7c02db5f8c72f9ba4eaae722ab5c37"
+
+          git -C /tmp/source checkout --detach d0355b6892983eefd71400759375b636933eae35
+          rm -rf history/jtdx-superhound-p1-ci
+          mkdir -p history/jtdx-superhound-p1-ci/workflows
+          cp -a /tmp/source/.github/workflows/jtdx-superhound-p1.yml history/jtdx-superhound-p1-ci/workflows/
+          test "$(git -C /tmp/source rev-parse HEAD)" = "d0355b6892983eefd71400759375b636933eae35"
+
+          cat > history/README.md <<'EOF'
+          # Historical JTDX work
+
+          This directory preserves JTDX/SuperHound artifacts that existed on earlier dedicated branches but were superseded by the current FINAL baseline.
+
+          - `jtdx-final-build`: source branch HEAD `0ad15a1fbe66759f23800b399664d132f3b9cd2c`; archived `jtdx-final` tree SHA `8217dfc57b7c02db5f8c72f9ba4eaae722ab5c37` plus its historical JTDX build workflow.
+          - `jtdx-superhound-p1-ci`: source branch HEAD `d0355b6892983eefd71400759375b636933eae35`; archived Phase P1 JTDX/SuperHound validation workflow.
+          - `jtdx-final-build-2`: source branch HEAD `939b0353845c6cc5410ff95063e647a0cc7e065b`; its final JTDX trees are identical to the active migrated baseline, so they are not duplicated under `history/`.
+
+          The complete Thetis trees from those branches are intentionally excluded because they are unrelated to JTDX.
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add history
+          git commit -m "Archive superseded JTDX development artifacts"
+          git push origin HEAD:main
+
+          test "$(git rev-parse HEAD:history/jtdx-final-build/jtdx-final)" = "8217dfc57b7c02db5f8c72f9ba4eaae722ab5c37"
+          test "$(git hash-object history/jtdx-final-build/workflows/jtdx-final-build.yml)" = "19597420311949dcac0d727b731143c92fc43f50"
+          test "$(git hash-object history/jtdx-superhound-p1-ci/workflows/jtdx-superhound-p1.yml)" = "25e5f13585cc269004afbc1af468a4ec72e35300"
+          echo HISTORY_ARCHIVE_VERIFY=PASS
