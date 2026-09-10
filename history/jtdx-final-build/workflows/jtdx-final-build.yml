@@ -1,0 +1,77 @@
+name: JTDX FINAL Windows Build
+
+on:
+  push:
+    branches:
+      - jtdx-final-build
+    paths:
+      - 'jtdx-final/**'
+      - '.github/workflows/jtdx-final-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout isolated build branch
+        uses: actions/checkout@v4
+
+      - name: Reconstruct and verify exact build input
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $parts = Get-ChildItem '.\jtdx-final\package.b64.*' | Sort-Object Name
+          if ($parts.Count -ne 11) { throw "Expected 11 package segments, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          $zip = Join-Path $PWD 'JTDX_FINAL_BUILD_INPUT.zip'
+          [IO.File]::WriteAllBytes($zip, [Convert]::FromBase64String($b64))
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = '0412ed99483ca876166dd95983dc65f69eb364521596c2429e8d32e0a4cf9a5d'
+          Write-Host "INPUT_SHA256=$actual"
+          if ($actual -ne $expected) { throw "Build input SHA256 mismatch: $actual" }
+          $dst = Join-Path $PWD 'JTDX_FINAL_BUILD'
+          if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+          Expand-Archive -Path $zip -DestinationPath $dst -Force
+          Get-ChildItem $dst | Format-Table Name,Length
+
+      - name: Run patcher self-test
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location '.\JTDX_FINAL_BUILD'
+          python .\PATCHER_SELFTEST_R12.py
+          if ($LASTEXITCODE -ne 0) { throw "PATCHER_SELFTEST failed: $LASTEXITCODE" }
+
+      - name: Build JTDX SuperHound FT2 MSI
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\JTDX_FINAL_BUILD\BUILD_JTDX_SUPERHOUND_MSI.ps1'
+          if ($LASTEXITCODE -ne 0) { throw "Builder failed: $LASTEXITCODE" }
+
+      - name: Verify MSI output
+        if: success()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = @(Get-ChildItem '.\JTDX_FINAL_BUILD\OUTPUT' -Filter '*.msi' -File -Recurse)
+          if ($msi.Count -ne 1) { throw "Expected exactly one MSI, found $($msi.Count)" }
+          if ($msi[0].Length -lt 1000000) { throw "MSI unexpectedly small: $($msi[0].Length) bytes" }
+          $hash = (Get-FileHash $msi[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "FINAL_MSI=$($msi[0].Name)"
+          Write-Host "FINAL_MSI_SIZE=$($msi[0].Length)"
+          Write-Host "FINAL_MSI_SHA256=$hash"
+
+      - name: Upload build result and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JTDX-FINAL-Windows-result
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            JTDX_FINAL_BUILD/OUTPUT/**
+            JTDX_FINAL_BUILD/LOGS/**
+            JTDX_FINAL_BUILD/README_PL.txt
+            JTDX_FINAL_BUILD/FT2_AUDIT_PL.txt

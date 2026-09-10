@@ -1,0 +1,197 @@
+name: JTDX SuperHound P1 MSI
+
+on:
+  push:
+    branches: [jtdx-superhound-p1-ci]
+    paths:
+      - '.github/workflows/jtdx-superhound-p1.yml'
+      - 'tools/jtdx-superhound-p1/**'
+      - 'scripts/build_jtdx_superhound_msi.ps1'
+  workflow_dispatch:
+
+concurrency:
+  group: jtdx-superhound-p1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate patch against current JTDX
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m py_compile tools/jtdx-superhound-p1/scripts/patch_jtdx.py tools/jtdx-superhound-p1/scripts/disable_omnirig_ci.py
+          git clone --depth 1 https://git.code.sf.net/p/jtdx/code jtdx-preflight
+          git -C jtdx-preflight rev-parse HEAD
+          python tools/jtdx-superhound-p1/scripts/patch_jtdx.py jtdx-preflight tools/jtdx-superhound-p1/overlay
+          python tools/jtdx-superhound-p1/scripts/disable_omnirig_ci.py jtdx-preflight
+          git -C jtdx-preflight diff --check
+          grep -n 'lsuperhound' jtdx-preflight/commons.h jtdx-preflight/lib/jt9com.f90 jtdx-preflight/lib/decoder.f90 jtdx-preflight/mainwindow.cpp
+          grep -n 'sq4kouMainMonitorSplitter' jtdx-preflight/mainwindow.cpp
+          ! grep -q 'OmniRigTransceiver::register_transceivers' jtdx-preflight/TransceiverFactory.cpp
+          ! grep -q 'COMMAND ${DUMPCPP} -getfile' jtdx-preflight/CMakeLists.txt
+
+      - name: Compile bridge units
+        shell: bash
+        run: |
+          set -euxo pipefail
+          gcc -std=c99 -Wall -Wextra -pedantic -c tools/jtdx-superhound-p1/overlay/lib/superhound_external.c -o /tmp/superhound_external.o
+          gfortran -c tools/jtdx-superhound-p1/overlay/lib/superhound_external.f90 -o /tmp/superhound_external_f90.o
+
+  windows-msi:
+    needs: source-preflight
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git make patch python autoconf automake libtool pkgconf
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-gcc-fortran
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-fftw
+            mingw-w64-ucrt-x86_64-libusb
+            mingw-w64-ucrt-x86_64-portaudio
+            mingw-w64-ucrt-x86_64-boost
+            mingw-w64-ucrt-x86_64-qt5-base
+            mingw-w64-ucrt-x86_64-qt5-multimedia
+            mingw-w64-ucrt-x86_64-qt5-serialport
+            mingw-w64-ucrt-x86_64-qt5-websockets
+            mingw-w64-ucrt-x86_64-qt5-tools
+            mingw-w64-ucrt-x86_64-qt5-activeqt
+
+      - name: Prepare logs
+        shell: msys2 {0}
+        run: |
+          mkdir -p artifacts logs
+          gcc --version | tee logs/gcc.txt
+          gfortran --version | tee logs/gfortran.txt
+          cmake --version | tee logs/cmake.txt
+
+      - name: Clone JTDX and apply SuperHound
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://git.code.sf.net/p/jtdx/code jtdx
+          git -C jtdx rev-parse HEAD | tee logs/jtdx-commit.txt
+          python tools/jtdx-superhound-p1/scripts/patch_jtdx.py jtdx tools/jtdx-superhound-p1/overlay 2>&1 | tee logs/jtdx-patch.log
+          python tools/jtdx-superhound-p1/scripts/disable_omnirig_ci.py jtdx 2>&1 | tee logs/jtdx-omnirig-disable.log
+          git -C jtdx diff --check | tee logs/jtdx-diff-check.txt
+          git -C jtdx diff > artifacts/JTDX_SUPERHOUND_P1.patch
+
+      - name: Build pinned JTDX Hamlib
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          git init hamlib
+          git -C hamlib remote add origin https://git.code.sf.net/p/jtdx/hamlib
+          git -C hamlib fetch --depth 1 origin 1e70dd7b98fd715c829724313eb88884ca1cbfc1
+          git -C hamlib checkout --detach FETCH_HEAD
+          cd hamlib
+          ./bootstrap 2>&1 | tee ../logs/hamlib-bootstrap.log
+          ./configure --prefix=/ucrt64 --disable-static --enable-shared --without-readline --without-indi --without-cxx-binding --disable-winradio 2>&1 | tee ../logs/hamlib-configure.log
+          make -j4 2>&1 | tee ../logs/hamlib-build.log
+          make install 2>&1 | tee ../logs/hamlib-install.log
+          cd ..
+          pkg-config --modversion hamlib | tee logs/hamlib-version.txt
+
+      - name: Build official WSJT-X sfrx
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch v3.0.2 https://github.com/WSJTX/wsjtx.git wsjtx
+          : > wsjtx/OmniRig-CI-placeholder.tlb
+          OMNI=$(cygpath -m "$PWD/wsjtx/OmniRig-CI-placeholder.tlb")
+          cmake -S wsjtx -B build-wsjtx -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/ucrt64 \
+            -DOMNIRIG_TYPE_LIB="$OMNI" \
+            -DWSJT_SKIP_MAP65=ON \
+            -DWSJT_GENERATE_DOCS=OFF \
+            -DWSJT_BUILD_UTILS=ON \
+            2>&1 | tee logs/wsjtx-configure.log
+          cmake --build build-wsjtx --target sfrx --parallel 4 2>&1 | tee logs/wsjtx-sfrx-build.log
+          SFRX=$(find build-wsjtx -type f -iname 'sfrx.exe' | head -n 1)
+          test -n "$SFRX"
+          cp "$SFRX" artifacts/sfrx.exe
+          sha256sum artifacts/sfrx.exe | tee logs/sfrx-sha256.txt
+
+      - name: Configure JTDX
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          cmake -S jtdx -B build-jtdx -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/ucrt64 \
+            -DWSJT_GENERATE_DOCS=OFF \
+            -DWSJT_SKIP_MANPAGES=ON \
+            2>&1 | tee logs/jtdx-configure.log
+
+      - name: Build JTDX
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          cmake --build build-jtdx --parallel 4 2>&1 | tee logs/jtdx-build.log
+          JTDX=$(find build-jtdx -type f -iname 'jtdx.exe' | head -n 1)
+          test -n "$JTDX"
+          cp "$JTDX" artifacts/jtdx.exe
+          JT9=$(find build-jtdx -type f \( -iname 'jtdxjt9.exe' -o -iname 'jt9.exe' \) | head -n 1 || true)
+          [ -n "$JT9" ] && cp "$JT9" artifacts/jtdxjt9.exe || true
+          sha256sum artifacts/jtdx.exe | tee logs/jtdx-sha256.txt
+
+      - name: Assemble portable runtime
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          mkdir -p artifacts/test-bundle
+          cp artifacts/jtdx.exe artifacts/sfrx.exe artifacts/test-bundle/
+          [ -f artifacts/jtdxjt9.exe ] && cp artifacts/jtdxjt9.exe artifacts/test-bundle/ || true
+          for EXE in artifacts/jtdx.exe artifacts/jtdxjt9.exe artifacts/sfrx.exe; do
+            [ -f "$EXE" ] || continue
+            ldd "$EXE" | awk '/=> \/ucrt64\// {print $3}' | while read dll; do cp -n "$dll" artifacts/test-bundle/ 2>/dev/null || true; done
+          done
+          /ucrt64/bin/windeployqt.exe --release --no-translations --dir artifacts/test-bundle artifacts/jtdx.exe 2>&1 | tee logs/windeployqt.log
+          cp tools/jtdx-superhound-p1/README.md artifacts/test-bundle/SUPERHOUND_P1_README.md
+          test -f artifacts/test-bundle/jtdx.exe
+          test -f artifacts/test-bundle/sfrx.exe
+
+      - name: Build x64 MSI installer
+        shell: pwsh
+        run: |
+          ./scripts/build_jtdx_superhound_msi.ps1 `
+            -BundleDir artifacts/test-bundle `
+            -OutputMsi artifacts/JTDX_SUPERHOUND_P1_SQ4KOU.msi
+
+      - name: Verify MSI
+        shell: pwsh
+        run: |
+          $msi = Get-Item artifacts/JTDX_SUPERHOUND_P1_SQ4KOU.msi
+          if ($msi.Length -lt 100000) { throw "MSI too small: $($msi.Length)" }
+          Get-FileHash $msi.FullName -Algorithm SHA256 | Format-List | Out-String | Set-Content logs/msi-verification.txt
+          "MSI_OK size=$($msi.Length)" | Add-Content logs/msi-verification.txt
+          Get-Content logs/msi-verification.txt
+
+      - name: Upload MSI and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JTDX-SUPERHOUND-P1-MSI-${{ github.run_number }}
+          path: |
+            artifacts/**
+            logs/**
+          if-no-files-found: warn
+          retention-days: 30
