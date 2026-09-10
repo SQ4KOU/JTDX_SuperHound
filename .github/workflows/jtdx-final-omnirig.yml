@@ -73,17 +73,17 @@ jobs:
           [IO.File]::WriteAllText($builder,$text)
           foreach($needle in @(
             '-DJTDX_ENABLE_OMNIRIG=ON',
+            '-DDUMPCPP="$DUMPCPP_WIN"',
             '-DJTDX_OMNIRIG_SERVER="$OMNIRIG_SERVER_WIN"',
-            'lrelease-qt5 dumpcpp-qt5',
             '[PASS] OmniRig ActiveQt server file:',
-            '[PASS] Qt5 ActiveQt dumpcpp tool:',
+            '[PASS] Qt5 ActiveQt dumpcpp file:',
             '[PASS] OmniRig ActiveQt wrapper generation gate',
             "MSI_VERSION='2.2.177'",
             "MSI_NAME='JTDX-SuperHound-2.2.159-FINAL-TCI-BANDSAFE-OMNIRIG-win64'"
           )) {
             if(-not (Select-String -Path $builder -SimpleMatch $needle -Quiet)){throw "Missing OmniRig builder gate: $needle"}
           }
-          foreach($needle in @('JTDX_OMNIRIG_SERVER','dumpcpp-qt5','CMake deterministic OmniRig ActiveQt server path')) {
+          foreach($needle in @('JTDX_OMNIRIG_SERVER','DUMPCPP','CMake deterministic OmniRig ActiveQt inputs')) {
             if(-not (Select-String -Path $patcher -SimpleMatch $needle -Quiet)){throw "Missing OmniRig source patch gate: $needle"}
           }
           Write-Host 'OMNIRIG_OVERLAY=PASS'
@@ -153,19 +153,15 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $dumpcpp='C:\msys64\mingw64\bin\dumpcpp-qt5.exe'
+          $dumpcpp='C:\msys64\mingw64\qt5-static\bin\dumpcpp.exe'
           if(-not (Test-Path $dumpcpp)) {
-            Write-Host '[INFO] Dynamic ActiveQt package omitted dumpcpp; installing deterministic qt5-static tool fallback'
+            Write-Host '[INFO] Installing qt5-static solely for its self-contained dumpcpp generator'
             $bash='C:\msys64\usr\bin\bash.exe'
             if(-not (Test-Path $bash)){throw "MSYS2 bash missing: $bash"}
             & $bash -lc 'pacman -S --noconfirm --needed mingw-w64-x86_64-qt5-static'
             if($LASTEXITCODE -ne 0){throw "qt5-static pacman install exit code $LASTEXITCODE"}
-            $staticDump='C:\msys64\mingw64\qt5-static\bin\dumpcpp.exe'
-            if(-not (Test-Path $staticDump)){throw "qt5-static dumpcpp missing: $staticDump"}
-            Copy-Item -LiteralPath $staticDump -Destination $dumpcpp -Force
-            Write-Host "[PASS] Installed dumpcpp fallback from $staticDump"
           }
-          if(-not (Test-Path $dumpcpp)){throw "dumpcpp tool missing: $dumpcpp"}
+          if(-not (Test-Path $dumpcpp)){throw "qt5-static dumpcpp missing: $dumpcpp"}
           if(-not (Test-Path $env:SH_OMNIRIG_SERVER_WIN)){throw "OmniRig server missing: $env:SH_OMNIRIG_SERVER_WIN"}
           $env:PATH="C:\msys64\mingw64\bin;$env:PATH"
           $tmp=Join-Path $env:RUNNER_TEMP 'omnirig-dumpcpp-direct'
@@ -184,6 +180,7 @@ jobs:
           Write-Host "OMNIRIG_DUMPCPP_HEADER_SIZE=$((Get-Item $h).Length)"
           Write-Host "OMNIRIG_DUMPCPP_SOURCE_SIZE=$((Get-Item $c).Length)"
           Write-Host 'OMNIRIG_DUMPCPP_DIRECT=PASS'
+          "SH_DUMPCPP_WIN=$dumpcpp" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Export CMake paths
         shell: powershell
