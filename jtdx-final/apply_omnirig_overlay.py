@@ -3,15 +3,105 @@ import sys
 
 root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('.')
 bp = root / 'BUILD_JTDX_SUPERHOUND_MSI.ps1'
+pp = root / 'patch_superhound.py'
 if not bp.exists():
     raise SystemExit(f'[FAIL] builder missing: {bp}')
+if not pp.exists():
+    raise SystemExit(f'[FAIL] source patcher missing: {pp}')
 
+# ---------------------------------------------------------------------------
+# Source patcher overlay
+# ---------------------------------------------------------------------------
+# JTDX 2.2.159 already contains the native OmniRigTransceiver backend.  The
+# SQ4KOU FINAL patch made it optional because the old upstream CMake logic
+# discovers the OmniRig type library through `dumpcpp -getfile`.  With current
+# 64-bit MinGW/ActiveQt that registry lookup can fail even though the 64-bit
+# application can activate the 32-bit out-of-process OmniRig COM server.
+#
+# Keep the native JTDX implementation, but allow CMake to receive the actual
+# OmniRig.exe path explicitly.  Qt dumpcpp can then generate OmniRig.h/.cpp
+# directly from that file without depending on the registry view used by
+# `dumpcpp -getfile`.
+p = pp.read_text(encoding='utf-8')
+source_marker = '# Ensure CPack/BundleUtilities can resolve the separately built JTDX Hamlib DLL.\n'
+source_overlay = r'''# SQ4KOU OmniRig x64: deterministic ActiveQt server path.
+# The preceding FINAL patch has already converted upstream OmniRig discovery
+# to the JTDX_ENABLE_OMNIRIG conditional block. Replace that generated block
+# with an explicit-file capable variant while retaining upstream discovery as
+# a fallback for ordinary source builds.
+replace_once('CMakeLists.txt',
+    '''if (WIN32 AND JTDX_ENABLE_OMNIRIG)
+  # generate the OmniRig COM interface source only when explicitly enabled
+  find_program (DUMPCPP dumpcpp)
+  if (DUMPCPP-NOTFOUND)
+    message (FATAL_ERROR "dumpcpp tool not found")
+  endif (DUMPCPP-NOTFOUND)
+  execute_process (
+    COMMAND ${DUMPCPP} -getfile {4FE359C5-A58F-459D-BE95-CA559FB4F270}
+    OUTPUT_VARIABLE AXSERVER
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+  string (STRIP "${AXSERVER}" AXSERVER)
+  if (NOT AXSERVER)
+    message (FATAL_ERROR "You need to install OmniRig on this computer")
+  endif (NOT AXSERVER)
+  string (REPLACE "\\\"" "" AXSERVER ${AXSERVER})
+  file (TO_CMAKE_PATH ${AXSERVER} AXSERVERSRCS)
+endif ()
+''',
+    '''if (WIN32 AND JTDX_ENABLE_OMNIRIG)
+  # Generate the native JTDX OmniRig ActiveQt interface. An explicit server
+  # file avoids the 32/64-bit registry-view ambiguity of dumpcpp -getfile.
+  find_program (DUMPCPP dumpcpp)
+  if (DUMPCPP-NOTFOUND)
+    message (FATAL_ERROR "dumpcpp tool not found")
+  endif (DUMPCPP-NOTFOUND)
+  set (JTDX_OMNIRIG_SERVER "" CACHE FILEPATH "Path to OmniRig.exe/type library for ActiveQt wrapper generation")
+  if (JTDX_OMNIRIG_SERVER)
+    if (NOT EXISTS "${JTDX_OMNIRIG_SERVER}")
+      message (FATAL_ERROR "JTDX_OMNIRIG_SERVER does not exist: ${JTDX_OMNIRIG_SERVER}")
+    endif ()
+    set (AXSERVER "${JTDX_OMNIRIG_SERVER}")
+  else ()
+    execute_process (
+      COMMAND ${DUMPCPP} -getfile {4FE359C5-A58F-459D-BE95-CA559FB4F270}
+      OUTPUT_VARIABLE AXSERVER
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      )
+    string (STRIP "${AXSERVER}" AXSERVER)
+    if (NOT AXSERVER)
+      message (FATAL_ERROR "OmniRig is installed but its type library could not be resolved; set JTDX_OMNIRIG_SERVER explicitly")
+    endif (NOT AXSERVER)
+    string (REPLACE "\\\"" "" AXSERVER ${AXSERVER})
+  endif ()
+  file (TO_CMAKE_PATH "${AXSERVER}" AXSERVERSRCS)
+  message (STATUS "OmniRig ActiveQt server: ${AXSERVERSRCS}")
+endif ()
+''',
+    'CMake deterministic OmniRig ActiveQt server path')
+
+'''
+if '# SQ4KOU OmniRig x64: deterministic ActiveQt server path.' not in p:
+    if p.count(source_marker) != 1:
+        raise SystemExit(f'[FAIL] OmniRig source-overlay insertion anchor count={p.count(source_marker)}')
+    p = p.replace(source_marker, source_overlay + source_marker, 1)
+
+audit_old = "'CMakeLists.txt': ['wsjt_superhound_FSRCS', 'wsjt_superhound_CSRCS', 'JTDX_ENABLE_OMNIRIG', 'hamlib_bin_dir', 'CPACK_GENERATOR \"WIX\"'],"
+audit_new = "'CMakeLists.txt': ['wsjt_superhound_FSRCS', 'wsjt_superhound_CSRCS', 'JTDX_ENABLE_OMNIRIG', 'JTDX_OMNIRIG_SERVER', 'hamlib_bin_dir', 'CPACK_GENERATOR \"WIX\"'],"
+if audit_new not in p:
+    if p.count(audit_old) != 1:
+        raise SystemExit(f'[FAIL] OmniRig source-audit marker anchor count={p.count(audit_old)}')
+    p = p.replace(audit_old, audit_new, 1)
+
+pp.write_text(p, encoding='utf-8', newline='\n')
+
+# ---------------------------------------------------------------------------
+# ONECLICK builder overlay
+# ---------------------------------------------------------------------------
 b = bp.read_text(encoding='utf-8')
 
-# The verified SQ4KOU FINAL source patch deliberately made the original
-# JTDX 2.2.159 OmniRig backend optional so CI could build without a registered
-# COM server.  Re-enable that exact upstream backend; do not add a parallel
-# CAT implementation and do not touch the TCI BANDSAFE path.
+# Re-enable the exact native JTDX 2.2.159 OmniRig backend. Do not add a
+# parallel CAT implementation and do not touch the proven TCI BANDSAFE path.
 old_flag = '  -DJTDX_ENABLE_OMNIRIG=OFF \\\n'
 new_flag = '  -DJTDX_ENABLE_OMNIRIG=ON \\\n'
 if new_flag not in b:
@@ -19,8 +109,6 @@ if new_flag not in b:
         raise SystemExit(f'[FAIL] OmniRig CMake flag anchor count={b.count(old_flag)}')
     b = b.replace(old_flag, new_flag, 1)
 
-# Fail early and explicitly if the ActiveQt tool or the registered OmniRig
-# type library is unavailable. CMake performs the same authoritative check.
 old_tools = 'for t in git gcc g++ gfortran cmake ninja autoconf automake libtoolize make pkg-config patch qmake-qt5 lrelease-qt5; do\n'
 new_tools = 'for t in git gcc g++ gfortran cmake ninja autoconf automake libtoolize make pkg-config patch qmake-qt5 lrelease-qt5 dumpcpp; do\n'
 if new_tools not in b:
@@ -28,24 +116,42 @@ if new_tools not in b:
         raise SystemExit(f'[FAIL] build-tool gate anchor count={b.count(old_tools)}')
     b = b.replace(old_tools, new_tools, 1)
 
+# Resolve the installed OmniRig local-server executable by file path.  This is
+# deliberately not `dumpcpp -getfile`: current MinGW64 dumpcpp can use a
+# different registry view even when x64 COM activation itself works.
 cmake_anchor = 'rm -rf jtdx/build-superhound\ncmake -S jtdx -B jtdx/build-superhound -G Ninja \\\n'
-preflight = '''# OmniRig is a local COM server. The official runtime must be registered on
-# the build host so Qt dumpcpp can resolve its type library.
-OMNIRIG_AXSERVER="$(dumpcpp -getfile {4FE359C5-A58F-459D-BE95-CA559FB4F270} 2>/dev/null | tr -d '\\r' || true)"
-if [ -z "$OMNIRIG_AXSERVER" ]; then
-  echo '[FAIL] OmniRig COM server/type library is not registered on this Windows host'
+preflight = '''OMNIRIG_SERVER_WIN="${SH_OMNIRIG_SERVER_WIN:-C:/Program Files (x86)/Afreet/OmniRig/OmniRig.exe}"
+OMNIRIG_SERVER_MSYS="$(cygpath -u "$OMNIRIG_SERVER_WIN")"
+if [ ! -f "$OMNIRIG_SERVER_MSYS" ] && [ -f '/c/Program Files/Afreet/OmniRig/OmniRig.exe' ]; then
+  OMNIRIG_SERVER_MSYS='/c/Program Files/Afreet/OmniRig/OmniRig.exe'
+  OMNIRIG_SERVER_WIN='C:/Program Files/Afreet/OmniRig/OmniRig.exe'
+fi
+if [ ! -f "$OMNIRIG_SERVER_MSYS" ]; then
+  echo "[FAIL] OmniRig server executable not found: $OMNIRIG_SERVER_WIN"
+  echo '[FAIL] Install OmniRig 1.x or set SH_OMNIRIG_SERVER_WIN to OmniRig.exe'
   exit 38
 fi
-echo "[PASS] OmniRig COM type library: $OMNIRIG_AXSERVER"
+OMNIRIG_SERVER_WIN="$(cygpath -m "$OMNIRIG_SERVER_MSYS")"
+echo "[PASS] OmniRig ActiveQt server file: $OMNIRIG_SERVER_WIN"
 
 rm -rf jtdx/build-superhound
 cmake -S jtdx -B jtdx/build-superhound -G Ninja \\
 '''
-if '[PASS] OmniRig COM type library:' not in b:
+if '[PASS] OmniRig ActiveQt server file:' not in b:
     if b.count(cmake_anchor) != 1:
         raise SystemExit(f'[FAIL] CMake preflight anchor count={b.count(cmake_anchor)}')
     b = b.replace(cmake_anchor, preflight, 1)
 
+# Feed the resolved file to CMake immediately after enabling OmniRig.
+cmake_flag = '  -DJTDX_ENABLE_OMNIRIG=ON \\\n'
+cmake_server = '  -DJTDX_ENABLE_OMNIRIG=ON \\\n  -DJTDX_OMNIRIG_SERVER="$OMNIRIG_SERVER_WIN" \\\n'
+if cmake_server not in b:
+    if b.count(cmake_flag) != 1:
+        raise SystemExit(f'[FAIL] OmniRig CMake server argument anchor count={b.count(cmake_flag)}')
+    b = b.replace(cmake_flag, cmake_server, 1)
+
+# Configure-time gates first; generated ActiveQt wrappers are produced by the
+# build rule, so verify them only after cmake --build has completed.
 post_anchor = "echo '[PASS] CMake FFTW threads link gate'\n\ncmake --build jtdx/build-superhound --parallel\n"
 post_block = '''echo '[PASS] CMake FFTW threads link gate'
 
@@ -53,28 +159,38 @@ grep -Fq 'JTDX_ENABLE_OMNIRIG:BOOL=ON' jtdx/build-superhound/CMakeCache.txt || {
   echo '[FAIL] OmniRig CMake option is not ON'
   exit 39
 }
+grep -Fq 'JTDX_OMNIRIG_SERVER:FILEPATH=' jtdx/build-superhound/CMakeCache.txt || {
+  echo '[FAIL] explicit OmniRig server path is absent from CMake cache'
+  exit 40
+}
 grep -Fq 'OmniRigTransceiver.cpp' jtdx/build-superhound/build.ninja || {
   echo '[FAIL] OmniRigTransceiver.cpp is absent from Ninja build graph'
-  exit 40
+  exit 41
 }
 grep -Fq 'JTDX_ENABLE_OMNIRIG' jtdx/build-superhound/build.ninja || {
   echo '[FAIL] OmniRig compile definition is absent from Ninja build graph'
-  exit 41
-}
-if ! find jtdx/build-superhound -type f -iname 'OmniRig.h' -print -quit | grep -q .; then
-  echo '[FAIL] generated OmniRig ActiveQt wrapper header missing'
   exit 42
-fi
-echo '[PASS] OmniRig configure/source/generator gates'
+}
+echo '[PASS] OmniRig configure/source gates'
 
 cmake --build jtdx/build-superhound --parallel
+
+if ! find jtdx/build-superhound -type f -iname 'OmniRig.h' -print -quit | grep -q .; then
+  echo '[FAIL] generated OmniRig ActiveQt wrapper header missing after build'
+  exit 43
+fi
+if ! find jtdx/build-superhound -type f -iname 'OmniRig.cpp' -print -quit | grep -q .; then
+  echo '[FAIL] generated OmniRig ActiveQt wrapper source missing after build'
+  exit 44
+fi
+echo '[PASS] OmniRig ActiveQt wrapper generation gate'
 '''
-if "echo '[PASS] OmniRig configure/source/generator gates'" not in b:
+if "echo '[PASS] OmniRig ActiveQt wrapper generation gate'" not in b:
     if b.count(post_anchor) != 1:
         raise SystemExit(f'[FAIL] CMake postcheck anchor count={b.count(post_anchor)}')
     b = b.replace(post_anchor, post_block, 1)
 
-# This is an additive build variant over FINAL TCI BANDSAFE.
+# Additive build variant over FINAL TCI BANDSAFE.
 if "MSI_VERSION='2.2.177'" not in b:
     old_ver = "MSI_VERSION='2.2.176'"
     if b.count(old_ver) != 1:
@@ -92,14 +208,25 @@ bp.write_text(b, encoding='utf-8', newline='\n')
 
 for needle in [
     '-DJTDX_ENABLE_OMNIRIG=ON',
+    '-DJTDX_OMNIRIG_SERVER="$OMNIRIG_SERVER_WIN"',
     'lrelease-qt5 dumpcpp',
-    '[PASS] OmniRig COM type library:',
+    '[PASS] OmniRig ActiveQt server file:',
     'JTDX_ENABLE_OMNIRIG:BOOL=ON',
+    'JTDX_OMNIRIG_SERVER:FILEPATH=',
     'OmniRigTransceiver.cpp',
+    '[PASS] OmniRig ActiveQt wrapper generation gate',
     "MSI_VERSION='2.2.177'",
     new_name,
 ]:
     if needle not in b:
         raise SystemExit(f'[FAIL] OmniRig builder postcheck missing {needle!r}')
 
-print('[PASS] native JTDX OmniRig build overlay')
+for needle in [
+    '# SQ4KOU OmniRig x64: deterministic ActiveQt server path.',
+    'JTDX_OMNIRIG_SERVER',
+    'CMake deterministic OmniRig ActiveQt server path',
+]:
+    if needle not in p:
+        raise SystemExit(f'[FAIL] OmniRig source-patcher postcheck missing {needle!r}')
+
+print('[PASS] native JTDX OmniRig build/source overlay')
