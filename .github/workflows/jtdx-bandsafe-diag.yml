@@ -1,0 +1,175 @@
+name: JTDX BANDSAFE FINAL
+
+on:
+  push:
+    branches: [jtdx-final-build-2]
+    paths: ['.github/workflows/jtdx-bandsafe-diag.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct FINAL
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $dir="$env:GITHUB_WORKSPACE\jtdx-final"
+          function ReadFrag([string[]]$n){$s='';foreach($x in $n){$s += [IO.File]::ReadAllText((Join-Path $dir $x)).Trim()};return $s}
+          $b64=''
+          for($i=0;$i -lt 14;$i++){
+            if($i -eq 6){$p=ReadFrag @('fix06.0.0','fix06.0.1.0','fix06.0.1.1','fix06.1','fix06.2','fix06.3')}
+            elseif($i -eq 7){$p=ReadFrag @('fix07.0','fix07.1','fix07.2','fix07.3.0','fix07.3.1')}
+            elseif($i -eq 12){$p=ReadFrag @('fix12.0','fix12.1','fix12.2','fix12.3')}
+            else{$p=ReadFrag @(("bundle.part{0:D2}" -f $i))}
+            $b64 += $p
+          }
+          if($b64.Length -ne 104704){throw "Base64 length $($b64.Length)"}
+          $zip="$env:RUNNER_TEMP\final.zip"
+          [IO.File]::WriteAllBytes($zip,[Convert]::FromBase64String($b64))
+          $sha=(Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if($sha -ne 'c7bafdd622a46dac7730f477b46daf69f821a4b2edc70e27345036e842a1b354'){throw "bundle sha $sha"}
+          $dst="$env:RUNNER_TEMP\jtdx-bandsafe"
+          Expand-Archive $zip $dst -Force
+          $root="$dst\JTDX_SUPERHOUND_MSI_FINAL"
+          "FINAL_ROOT=$root" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Apply overlays and BANDSAFE compile fix
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          python "$env:GITHUB_WORKSPACE\jtdx-final\apply_tci_bandfix_overlay.py" "$env:FINAL_ROOT"
+          python "$env:GITHUB_WORKSPACE\jtdx-final\apply_jt9_shutdown_fix_overlay.py" "$env:FINAL_ROOT"
+          python "$env:GITHUB_WORKSPACE\jtdx-final\apply_tci_bandsafe_overlay.py" "$env:FINAL_ROOT"
+
+          $pp="$env:FINAL_ROOT\patch_superhound.py"
+          $pt=[IO.File]::ReadAllText($pp)
+          $old='return (index >= 0 && index < args.size()) ? args.at(index) : QString();'
+          $new='return args.value(index);'
+          if($pt.Contains($old)){
+            $pt=$pt.Replace($old,$new)
+            [IO.File]::WriteAllText($pp,$pt)
+          } elseif(-not $pt.Contains($new)) {
+            throw 'BANDSAFE safe-argument helper anchor missing'
+          }
+          if(([IO.File]::ReadAllText($pp)).Contains('? arg(index) : QString()')){throw 'BANDSAFE recursive argument helper still present'}
+          python -m py_compile "$env:FINAL_ROOT\patch_superhound.py"
+
+          $b="$env:FINAL_ROOT\BUILD_JTDX_SUPERHOUND_MSI.ps1"
+          $t=[IO.File]::ReadAllText($b)
+          $t=$t.Replace("'--foreground','--signal=TERM','180s',","'--foreground','--signal=TERM','1800s',")
+          [IO.File]::WriteAllText($b,$t)
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          location: C:\msys64
+          update: true
+          cache: false
+          install: >-
+            git make patch pkgconf
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-gcc-fortran
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-boost
+            mingw-w64-x86_64-fftw
+            mingw-w64-x86_64-libusb
+            mingw-w64-x86_64-qt5-base
+            mingw-w64-x86_64-qt5-activeqt
+            mingw-w64-x86_64-qt5-multimedia
+            mingw-w64-x86_64-qt5-serialport
+            mingw-w64-x86_64-qt5-tools
+            mingw-w64-x86_64-qt5-websockets
+
+      - name: Export paths
+        shell: powershell
+        run: |
+          "CMAKE_PREFIX_PATH=C:\msys64\mingw64" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "Qt5_DIR=C:\msys64\mingw64\lib\cmake\Qt5" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:FINAL_ROOT\BUILD_JTDX_SUPERHOUND_MSI.ps1"
+          $c=$LASTEXITCODE
+          Write-Host "BUILDER_EXIT=$c"
+          if($c -ne 0){exit $c}
+
+      - name: Audit BANDSAFE source
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $p="$env:FINAL_ROOT\WORK\jtdx\TCITransceiver.cpp"
+          if(-not (Test-Path $p)){throw 'TCITransceiver.cpp missing'}
+          $t=[IO.File]::ReadAllText($p)
+          $required=@(
+            'err_index >= 0 && err_index < errortable.size()',
+            'return args.value(index);',
+            'band_change = !HPSDR &&',
+            'commander_ && inConnected && commander_->state() == QAbstractSocket::ConnectedState',
+            'bool const rx_superseded',
+            'bool const tx_superseded'
+          )
+          foreach($n in $required){if(-not $t.Contains($n)){throw "BANDSAFE audit missing: $n"}}
+          if($t.Contains('? arg(index) : QString()')){throw 'recursive arg helper found'}
+          Write-Host 'TCI_BANDSAFE_SOURCE_AUDIT=PASS'
+
+      - name: Validate FINAL MSI
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $msi=Get-ChildItem "$env:FINAL_ROOT\OUTPUT\JTDX-SuperHound*.msi" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if(-not $msi){throw 'FINAL BANDSAFE MSI not found'}
+          if($msi.Length -lt 1000000){throw "MSI too small: $($msi.Length)"}
+          $hash=(Get-FileHash $msi.FullName -Algorithm SHA256).Hash.ToLower()
+          Write-Host "FINAL_MSI=$($msi.Name)"
+          Write-Host "FINAL_MSI_SIZE=$($msi.Length)"
+          Write-Host "FINAL_MSI_SHA256=$hash"
+          @(
+            "FINAL_MSI=$($msi.Name)",
+            "FINAL_MSI_SIZE=$($msi.Length)",
+            "FINAL_MSI_SHA256=$hash",
+            'TCI_BANDSAFE_SOURCE_AUDIT=PASS'
+          ) | Set-Content "$env:FINAL_ROOT\OUTPUT\FINAL_BUILD_INFO.txt" -Encoding UTF8
+
+      - name: Upload FINAL BANDSAFE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JTDX-SuperHound-FINAL-TCI-BANDSAFE
+          path: |
+            ${{ env.FINAL_ROOT }}\OUTPUT\*.msi
+            ${{ env.FINAL_ROOT }}\OUTPUT\FINAL_BUILD_INFO.txt
+            ${{ env.FINAL_ROOT }}\LOGS\*.log
+          if-no-files-found: error
+
+      - name: Collect diagnostics
+        if: failure()
+        shell: powershell
+        run: |
+          $out="$env:RUNNER_TEMP\BANDSAFE_DIAG"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $dest=Join-Path $out 'BANDSAFE_DIAG.txt'
+          "BANDSAFE COMPILER DIAGNOSTICS" | Set-Content $dest
+          Get-ChildItem "$env:FINAL_ROOT\LOGS" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | ForEach-Object {
+            "===== $($_.FullName) =====" | Add-Content $dest
+            Get-Content $_.FullName -Tail 1800 -ErrorAction SilentlyContinue | Add-Content $dest
+          }
+          Get-ChildItem "$env:FINAL_ROOT\WORK" -Recurse -File -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'CMakeError|CMakeOutput|\.log$'} | Sort-Object LastWriteTime -Descending | Select-Object -First 20 | ForEach-Object {
+            "===== $($_.FullName) =====" | Add-Content $dest
+            Get-Content $_.FullName -Tail 800 -ErrorAction SilentlyContinue | Add-Content $dest
+          }
+          if(Test-Path "$env:FINAL_ROOT\WORK\jtdx\TCITransceiver.cpp"){Copy-Item "$env:FINAL_ROOT\WORK\jtdx\TCITransceiver.cpp" $out}
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JTDX-BANDSAFE-DIAGNOSTICS
+          path: ${{ runner.temp }}\BANDSAFE_DIAG
+          if-no-files-found: error
