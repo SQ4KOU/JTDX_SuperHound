@@ -74,15 +74,16 @@ jobs:
           foreach($needle in @(
             '-DJTDX_ENABLE_OMNIRIG=ON',
             '-DJTDX_OMNIRIG_SERVER="$OMNIRIG_SERVER_WIN"',
-            'lrelease-qt5 dumpcpp',
+            'lrelease-qt5 dumpcpp-qt5',
             '[PASS] OmniRig ActiveQt server file:',
+            '[PASS] Qt5 ActiveQt dumpcpp tool:',
             '[PASS] OmniRig ActiveQt wrapper generation gate',
             "MSI_VERSION='2.2.177'",
             "MSI_NAME='JTDX-SuperHound-2.2.159-FINAL-TCI-BANDSAFE-OMNIRIG-win64'"
           )) {
             if(-not (Select-String -Path $builder -SimpleMatch $needle -Quiet)){throw "Missing OmniRig builder gate: $needle"}
           }
-          foreach($needle in @('JTDX_OMNIRIG_SERVER','CMake deterministic OmniRig ActiveQt server path')) {
+          foreach($needle in @('JTDX_OMNIRIG_SERVER','dumpcpp-qt5','CMake deterministic OmniRig ActiveQt server path')) {
             if(-not (Select-String -Path $patcher -SimpleMatch $needle -Quiet)){throw "Missing OmniRig source patch gate: $needle"}
           }
           Write-Host 'OMNIRIG_OVERLAY=PASS'
@@ -152,11 +153,11 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $dumpcpp='C:\msys64\mingw64\bin\dumpcpp.exe'
+          $dumpcpp='C:\msys64\mingw64\bin\dumpcpp-qt5.exe'
           if(-not (Test-Path $dumpcpp)) {
             Write-Host 'ActiveQt bin directory:'
             Get-ChildItem 'C:\msys64\mingw64\bin' -Filter '*dump*' | ForEach-Object { Write-Host $_.FullName }
-            throw "dumpcpp.exe missing: $dumpcpp"
+            throw "dumpcpp-qt5.exe missing: $dumpcpp"
           }
           if(-not (Test-Path $env:SH_OMNIRIG_SERVER_WIN)){throw "OmniRig server missing: $env:SH_OMNIRIG_SERVER_WIN"}
           $tmp=Join-Path $env:RUNNER_TEMP 'omnirig-dumpcpp-direct'
@@ -165,7 +166,7 @@ jobs:
           Write-Host "DUMPCPP=$dumpcpp"
           Write-Host "DUMPCPP_INPUT=$env:SH_OMNIRIG_SERVER_WIN"
           & $dumpcpp -o $out $env:SH_OMNIRIG_SERVER_WIN
-          if($LASTEXITCODE -ne 0){throw "dumpcpp exit code $LASTEXITCODE"}
+          if($LASTEXITCODE -ne 0){throw "dumpcpp-qt5 exit code $LASTEXITCODE"}
           $h="$out.h"
           $c="$out.cpp"
           if(-not (Test-Path $h)){throw "Generated OmniRig.h missing: $h"}
