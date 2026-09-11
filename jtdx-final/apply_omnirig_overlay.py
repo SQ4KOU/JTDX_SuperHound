@@ -13,6 +13,7 @@ if not pp.exists():
 # SQ4KOU FINAL made it optional because upstream CMake relies on dumpcpp
 # registry discovery. Keep that native backend and make both the OmniRig
 # server file and dumpcpp executable explicit inputs.
+# The final OmniRig workflow validates this together with the TCI BANDSAFE overlay.
 p = pp.read_text(encoding='utf-8')
 source_marker = '# Ensure CPack/BundleUtilities can resolve the separately built JTDX Hamlib DLL.\n'
 source_overlay = r"""# SQ4KOU OmniRig x64: deterministic ActiveQt inputs.
