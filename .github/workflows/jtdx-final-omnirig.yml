@@ -192,8 +192,30 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:FINAL_ROOT\BUILD_JTDX_SUPERHOUND_MSI.ps1"
-          if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}
+          $stdout=Join-Path $env:RUNNER_TEMP 'jtdx-final-omnirig-build.stdout.log'
+          $stderr=Join-Path $env:RUNNER_TEMP 'jtdx-final-omnirig-build.stderr.log'
+          $log=Join-Path $env:RUNNER_TEMP 'jtdx-final-omnirig-build.log'
+          $builder="$env:FINAL_ROOT\BUILD_JTDX_SUPERHOUND_MSI.ps1"
+          $args=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$builder)
+          $p=Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          @('[STDOUT]') + @(Get-Content $stdout -ErrorAction SilentlyContinue) + @('[STDERR]') + @(Get-Content $stderr -ErrorAction SilentlyContinue) | Set-Content $log -Encoding UTF8
+          Get-Content $log
+          "BUILD_DIAGNOSTIC_LOG=$log" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          if($p.ExitCode -ne 0){exit $p.ExitCode}
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JTDX-SuperHound-OMNIRIG-build-diagnostics
+          path: |
+            ${{ runner.temp }}\jtdx-final-omnirig-build.log
+            ${{ runner.temp }}\jtdx-final-omnirig-build.stdout.log
+            ${{ runner.temp }}\jtdx-final-omnirig-build.stderr.log
+            ${{ env.FINAL_ROOT }}\LOGS\*.log
+            ${{ env.FINAL_ROOT }}\WORK\jtdx\build-superhound\CMakeCache.txt
+            ${{ env.FINAL_ROOT }}\WORK\jtdx\build-superhound\build.ninja
+          if-no-files-found: warn
 
       - name: Audit compiled OmniRig and BANDSAFE source
         shell: powershell
