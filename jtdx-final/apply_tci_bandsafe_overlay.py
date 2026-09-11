@@ -39,7 +39,7 @@ if new_head not in mb:
     mb = mb.replace(old_head, new_head, 1)
 
 old_parse = '''    for (QString cmds : cmd_list){\n        QStringList cmd = cmds.split(":", SkipEmptyParts);\n        QStringList args = cmd.last().split(",", SkipEmptyParts);\n        Tci_Cmd idCmd = mapCmd_[cmd.first()];\n'''
-new_parse = '''    for (QString cmds : cmd_list){\n        QStringList cmd = cmds.split(":", SkipEmptyParts);\n        if (cmd.isEmpty()) continue;\n        QStringList args;\n        if (cmd.size() > 1) args = cmd.last().split(",", SkipEmptyParts);\n        Tci_Cmd idCmd = mapCmd_[cmd.first()];\n        auto arg = [&args](int index) -> QString {\n          return (index >= 0 && index < args.size()) ? args.at(index) : QString();\n        };\n'''
+new_parse = '''    for (QString cmds : cmd_list){\n        QStringList cmd = cmds.split(":", SkipEmptyParts);\n        if (cmd.isEmpty()) continue;\n        QStringList args;\n        if (cmd.size() > 1) args = cmd.last().split(",", SkipEmptyParts);\n        Tci_Cmd idCmd = mapCmd_[cmd.first()];\n        auto arg = [&args](int index) -> QString {\n          return (index >= 0 && index < args.size()) ? args.value(index) : QString();\n        };\n'''
 if new_parse not in mb:
     if mb.count(old_parse) != 1:
         raise SystemExit(f'[FAIL] TCI parser command anchor count={mb.count(old_parse)}')
