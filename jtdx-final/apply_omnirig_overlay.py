@@ -11,16 +11,11 @@ if not pp.exists():
 
 # JTDX 2.2.159 already contains the native OmniRigTransceiver backend.
 # SQ4KOU FINAL made it optional because upstream CMake relies on dumpcpp
-# registry discovery.  Keep that native backend and make both the OmniRig
-# server file and dumpcpp executable explicit inputs.  The dumpcpp executable
-# may come from MSYS2 qt5-static; generated code is compiled against the
-# normal dynamic Qt5 ActiveQt libraries used by JTDX.
+# registry discovery. Keep that native backend and make both the OmniRig
+# server file and dumpcpp executable explicit inputs.
 p = pp.read_text(encoding='utf-8')
 source_marker = '# Ensure CPack/BundleUtilities can resolve the separately built JTDX Hamlib DLL.\n'
 source_overlay = r"""# SQ4KOU OmniRig x64: deterministic ActiveQt inputs.
-# Replace the generated optional OmniRig block with explicit-file capable
-# handling. DUMPCPP can be supplied with -DDUMPCPP=... so no binary has to be
-# copied into /mingw64/bin (which would conflict with pacman-owned files).
 replace_once('CMakeLists.txt',
     '''if (WIN32 AND JTDX_ENABLE_OMNIRIG)
   # generate the OmniRig COM interface source only when explicitly enabled
@@ -42,15 +37,18 @@ replace_once('CMakeLists.txt',
 endif ()
 ''',
     '''if (WIN32 AND JTDX_ENABLE_OMNIRIG)
-  # Generate the native JTDX OmniRig ActiveQt interface. The build may pass
-  # DUMPCPP explicitly (for example qt5-static/bin/dumpcpp.exe) to avoid
-  # registry/PATH and pacman package-layout ambiguity.
+  # Generate the native JTDX OmniRig ActiveQt interface. DUMPCPP may be
+  # supplied explicitly, e.g. from qt5-static/bin/dumpcpp.exe.
   if (NOT DUMPCPP)
     find_program (DUMPCPP NAMES dumpcpp-qt5 dumpcpp)
   endif ()
   if (NOT DUMPCPP OR NOT EXISTS "${DUMPCPP}")
     message (FATAL_ERROR "Qt5 ActiveQt dumpcpp tool not found: ${DUMPCPP}")
   endif ()
+  # Give an explicitly supplied -DDUMPCPP=... a stable FILEPATH cache type.
+  # This also makes the deterministic build gate inspect the real CMake state
+  # instead of relying on the untyped UNINITIALIZED command-line cache entry.
+  set (DUMPCPP "${DUMPCPP}" CACHE FILEPATH "Qt5 ActiveQt dumpcpp executable" FORCE)
   set (JTDX_OMNIRIG_SERVER "" CACHE FILEPATH "Path to OmniRig.exe/type library for ActiveQt wrapper generation")
   if (JTDX_OMNIRIG_SERVER)
     if (NOT EXISTS "${JTDX_OMNIRIG_SERVER}")
@@ -92,7 +90,6 @@ pp.write_text(p, encoding='utf-8', newline='\n')
 
 b = bp.read_text(encoding='utf-8')
 
-# Re-enable the exact native backend; TCI BANDSAFE remains untouched.
 old_flag = '  -DJTDX_ENABLE_OMNIRIG=OFF \\\n'
 new_flag = '  -DJTDX_ENABLE_OMNIRIG=ON \\\n'
 if new_flag not in b:
@@ -100,12 +97,8 @@ if new_flag not in b:
         raise SystemExit(f'[FAIL] OmniRig CMake flag anchor count={b.count(old_flag)}')
     b = b.replace(old_flag, new_flag, 1)
 
-# Do not require dumpcpp in the normal /mingw64/bin PATH.  It is supplied by
-# explicit path from qt5-static, avoiding conflicts with the dynamic ActiveQt
-# package installed later by the original ONECLICK dependency step.
 old_tools = 'for t in git gcc g++ gfortran cmake ninja autoconf automake libtoolize make pkg-config patch qmake-qt5 lrelease-qt5; do\n'
 if old_tools not in b:
-    # tolerate an earlier OmniRig overlay only when it is this exact form
     old_tools_with_dump = 'for t in git gcc g++ gfortran cmake ninja autoconf automake libtoolize make pkg-config patch qmake-qt5 lrelease-qt5 dumpcpp-qt5; do\n'
     if old_tools_with_dump in b:
         b = b.replace(old_tools_with_dump, old_tools, 1)
@@ -162,11 +155,10 @@ grep -Fq 'JTDX_OMNIRIG_SERVER:FILEPATH=' jtdx/build-superhound/CMakeCache.txt ||
   echo '[FAIL] explicit OmniRig server path is absent from CMake cache'
   exit 41
 }
-grep -Fq 'DUMPCPP:FILEPATH=' jtdx/build-superhound/CMakeCache.txt && true
-if ! grep -Eq '^DUMPCPP(:FILEPATH)?=' jtdx/build-superhound/CMakeCache.txt; then
+grep -Fq 'DUMPCPP:FILEPATH=' jtdx/build-superhound/CMakeCache.txt || {
   echo '[FAIL] explicit dumpcpp path is absent from CMake cache'
   exit 42
-fi
+}
 grep -Fq 'OmniRigTransceiver.cpp' jtdx/build-superhound/build.ninja || {
   echo '[FAIL] OmniRigTransceiver.cpp is absent from Ninja build graph'
   exit 43
@@ -217,6 +209,7 @@ for needle in [
     '[PASS] Qt5 ActiveQt dumpcpp file:',
     'JTDX_ENABLE_OMNIRIG:BOOL=ON',
     'JTDX_OMNIRIG_SERVER:FILEPATH=',
+    'DUMPCPP:FILEPATH=',
     'OmniRigTransceiver.cpp',
     '[PASS] OmniRig ActiveQt wrapper generation gate',
     "MSI_VERSION='2.2.177'",
@@ -226,6 +219,7 @@ for needle in [
         raise SystemExit(f'[FAIL] OmniRig builder postcheck missing {needle!r}')
 for needle in [
     '# SQ4KOU OmniRig x64: deterministic ActiveQt inputs.',
+    'set (DUMPCPP "${DUMPCPP}" CACHE FILEPATH',
     'JTDX_OMNIRIG_SERVER',
     'DUMPCPP',
     'CMake deterministic OmniRig ActiveQt inputs',
