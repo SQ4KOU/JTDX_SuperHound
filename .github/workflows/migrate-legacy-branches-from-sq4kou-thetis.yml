@@ -1,0 +1,27 @@
+name: Migrate legacy JTDX branches from SQ4KOU-THETIS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror selected legacy JTDX histories
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --mirror https://github.com/SQ4KOU/SQ4KOU-THETIS.git source.git
+          cd source.git
+          git remote add target "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force target refs/heads/jtdx-final-build:refs/heads/archive/from-sq4kou-thetis/jtdx-final-build
+          git push --force target refs/heads/jtdx-final-build-2:refs/heads/archive/from-sq4kou-thetis/jtdx-final-build-2
+          git push --force target refs/heads/jtdx-superhound-p1-ci:refs/heads/archive/from-sq4kou-thetis/jtdx-superhound-p1-ci
+          echo "JTDX legacy migration complete"
