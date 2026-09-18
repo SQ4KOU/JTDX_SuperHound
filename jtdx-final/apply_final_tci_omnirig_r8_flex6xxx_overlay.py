@@ -97,7 +97,7 @@ printf 'q\n' | "$HAMLIB_PREFIX/bin/rigctl.exe" -m 2036 -r "127.0.0.1:$R8_FLEX_PO
 R8_FLEX_RC=$?
 set -e
 wait "$R8_FLEX_PID" || R8_FLEX_MOCK_RC=$?
-R8_FLEX_MOCK_RC=\${R8_FLEX_MOCK_RC:-0}
+R8_FLEX_MOCK_RC=${R8_FLEX_MOCK_RC:-0}
 cat "$R8_FLEX_LOG"
 cat "$WORK/flex6xxx_mock.log"
 if [ "$R8_FLEX_RC" -ne 0 ] || [ "$R8_FLEX_MOCK_RC" -ne 0 ]; then
