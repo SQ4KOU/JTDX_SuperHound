@@ -7,7 +7,7 @@ on:
     paths:
       - '.github/workflows/jtdx-final-tci-omnirig-r9-flex6xxx-slicemaster.yml'
       - 'jtdx-final/apply_final_tci_omnirig_r9_flex6xxx_slicemaster_overlay.py'
-      - 'jtdx-final/apply_final_tci_omnirig_r9_flex6xxx_slicemaster_overlay.py'
+      - 'jtdx-final/apply_final_tci_omnirig_r8_flex6xxx_overlay.py'
       - 'jtdx-final/apply_final_tci_omnirig_r7_overlay.py'
       - 'jtdx-final/apply_final_tci_omnirig_r6_overlay.py'
       - 'jtdx-final/apply_final_tci_omnirig_r5_overlay.py'
@@ -44,7 +44,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $overlay = "$env:GITHUB_WORKSPACE\jtdx-final\apply_final_tci_omnirig_r8_flex6xxx_overlay.py"
+          $overlay = "$env:GITHUB_WORKSPACE\jtdx-final\apply_final_tci_omnirig_r9_flex6xxx_slicemaster_overlay.py"
           python $overlay "$env:FINAL_ROOT"
           python -m py_compile $overlay
           python -m py_compile "$env:FINAL_ROOT\patch_superhound.py"
