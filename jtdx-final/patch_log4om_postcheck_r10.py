@@ -8,7 +8,7 @@ checks = {
     'logbook/logbook.cpp': [
         'QSQLITE_OPEN_READONLY', 'PRAGMA query_only = ON', 'SELECT * FROM \\"Log\\"',
         '_workedLog.match', '_workedLog.add', 'return _log.getCount(mod);',
-        'Deliberately do not filter historical Log4OM QSOs by MY_GRIDSQUARE.',
+        'iMyGrid = fieldIndex', 'stationGrid.left(4) != mygrid.left(4).toUpper()',
     ],
     'Configuration.cpp': [
         'Use Log4OM SQLite database for Worked/New', 'Log4OMEnabled', 'Log4OMDatabase',
