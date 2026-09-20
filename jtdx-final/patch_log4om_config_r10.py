@@ -10,7 +10,7 @@ save(p, t)
 
 p, t = load('Configuration.cpp')
 include_anchor = '#include <QLineEdit>\n'
-include_block = '''#include <QLineEdit>\n#include <QGroupBox>\n#include <QCheckBox>\n#include <QPushButton>\n#include <QLabel>\n#include <QHBoxLayout>\n#include <QVBoxLayout>\n'''
+include_block = '''#include <QLineEdit>\n#include <QFileInfo>\n#include <QGroupBox>\n#include <QCheckBox>\n#include <QPushButton>\n#include <QLabel>\n#include <QHBoxLayout>\n#include <QVBoxLayout>\n'''
 if '#include <QGroupBox>' not in t:
     if t.count(include_anchor) != 1:
         raise SystemExit(f'[FAIL] R10 Configuration include anchor count={t.count(include_anchor)}')
