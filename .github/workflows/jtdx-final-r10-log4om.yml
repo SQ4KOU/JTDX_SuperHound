@@ -156,6 +156,12 @@ jobs:
             mingw-w64-x86_64-qt5-tools
             mingw-w64-x86_64-qt5-websockets
 
+      - name: Cache pinned JTDX Hamlib build
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\_JTDX_SUPERHOUND_CACHE\hamlib-prefix
+          key: jtdx159-hamlib-1e70dd7b98fd715c829724313eb88884ca1cbfc1-windows2022-v1
+
       - name: Verify OmniRig COM through Qt dumpcpp
         shell: msys2 {0}
         run: |
