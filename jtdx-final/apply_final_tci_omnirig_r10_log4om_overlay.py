@@ -70,23 +70,12 @@ if new_name not in b:
 
 # Extend the inherited R12 patch-surface whitelist only for files legitimately
 # modified by the R10 Log4OM integration.
-old_allowed = r"Configuration\\.cpp|FrequencyList\\.cpp"
-new_allowed = r"Configuration\\.cpp|Configuration\\.hpp|FrequencyList\\.cpp"
-if old_allowed not in b:
-    raise SystemExit('[FAIL] R10 R12 whitelist Configuration anchor missing')
-b = b.replace(old_allowed, new_allowed, 1)
-old_allowed = r"logbook/adif\\.cpp|logqso\\.cpp"
-new_allowed = r"logbook/adif\\.cpp|logbook/logbook\\.cpp|logbook/logbook\\.h|logqso\\.cpp"
-if old_allowed not in b:
-    raise SystemExit('[FAIL] R10 R12 whitelist logbook anchor missing')
-b = b.replace(old_allowed, new_allowed, 1)
-
 # R10 legitimately extends the inherited R12 patch surface with the
 # Log4OM configuration declaration and LogBook implementation/header.
-old_allowed_a = r'Configuration\\.cpp|FrequencyList\\.cpp'
-new_allowed_a = r'Configuration\\.cpp|Configuration\\.hpp|FrequencyList\\.cpp'
-old_allowed_b = r'logbook/adif\\.cpp|logqso\\.cpp'
-new_allowed_b = r'logbook/adif\\.cpp|logbook/logbook\\.cpp|logbook/logbook\\.h|logqso\\.cpp'
+old_allowed_a = r'Configuration\.cpp|FrequencyList\.cpp'
+new_allowed_a = r'Configuration\.cpp|Configuration\.hpp|FrequencyList\.cpp'
+old_allowed_b = r'logbook/adif\.cpp|logqso\.cpp'
+new_allowed_b = r'logbook/adif\.cpp|logbook/logbook\.cpp|logbook/logbook\.h|logqso\.cpp'
 if old_allowed_a not in b or old_allowed_b not in b:
     raise SystemExit('[FAIL] R10 R12 allowed-file whitelist anchors missing')
 b = b.replace(old_allowed_a, new_allowed_a, 1)
