@@ -12,7 +12,7 @@ checks = {
     ],
     'Configuration.cpp': [
         'Use Log4OM SQLite database for Worked/New', 'Log4OMEnabled', 'Log4OMDatabase',
-        'ui_->verticalLayout_9->insertWidget(0, log4om_group_)', ':/decpasses.png',
+        'ui_->verticalLayout_9->insertWidget(0, log4om_group_)',
     ],
     'mainwindow.cpp': ['log4omWatcher', 'updateLog4OMWatcher', 'Log4OM Worked/New history reloaded'],
 }
