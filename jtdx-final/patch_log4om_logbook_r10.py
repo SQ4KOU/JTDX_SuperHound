@@ -59,6 +59,10 @@ for old, new in [
             raise SystemExit(f'[FAIL] R10 Worked/New routing anchor missing {old!r}')
         t = t.replace(old, new)
 
+# Some upstream Worked/New lines carry trailing spaces. Once those lines are
+# modified, git diff --check treats the inherited whitespace as a new error.
+t = '\n'.join(line.rstrip() if '_workedLog.match' in line else line for line in t.split('\n'))
+
 old_add = '''    _log.add(call,band,mode,date,gridsquare,name);'''
 new_add = '''    _log.add(call,band,mode,date,gridsquare,name);\n    _workedLog.add(call,band,mode,date,gridsquare,name);'''
 if new_add not in t:
