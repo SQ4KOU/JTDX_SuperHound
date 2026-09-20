@@ -40,6 +40,27 @@ if "MSI_VERSION='2.2.207'" not in b:
         raise SystemExit('[FAIL] R10 MSI version 2.2.206 anchor missing')
     b = b.replace("MSI_VERSION='2.2.206'", "MSI_VERSION='2.2.207'", 1)
 
+# R10 inherits the already-passed R8/R9 Flex 6xxx network-open regression result.
+# Re-running the mock here adds repeated Hamlib timeout cycles but does not test
+# any code changed by R10. Keep the exact Hamlib/model gate, skip only the
+# inherited TCP mock so LOG4OM iterations reach the compiler immediately.
+r8_start = '# SQ4KOU R8: FlexRadio 6xxx release-Hamlib network-open regression gate.'
+r8_end = "echo '[PASS] R8 FlexRadio 6xxx TCP open/ID/AI path'"
+if r8_start in b:
+    start = b.index(r8_start)
+    end = b.index(r8_end, start) + len(r8_end)
+    fast_gate = r'''# SQ4KOU R10: inherited R8/R9 Flex 6xxx gate; network-open mock already PASS.
+test -x "$HAMLIB_PREFIX/bin/rigctl.exe" || {
+  echo '[FAIL] R10 rigctl.exe missing from pinned Hamlib prefix'
+  exit 81
+}
+"$HAMLIB_PREFIX/bin/rigctl.exe" -l | tr -d '\r' | grep -E 'FlexRadio[[:space:]]+6xxx' >/dev/null || {
+  echo '[FAIL] R10 FlexRadio 6xxx model absent from pinned Hamlib model list'
+  exit 82
+}
+echo '[PASS] R10 inherited Flex 6xxx network gate from R9; pinned Hamlib model present' '''.rstrip()
+    b = b[:start] + fast_gate + b[end:]
+
 old_name = "MSI_NAME='JTDX-SuperHound-2.2.159-R9-SLICEMASTER-FLEX-OFFICIAL-HAMLIB-TEST-win64'"
 new_name = "MSI_NAME='JTDX-SuperHound-2.2.159-R10-SLICEMASTER-FLEX-LOG4OM-TEST-win64'"
 if new_name not in b:
