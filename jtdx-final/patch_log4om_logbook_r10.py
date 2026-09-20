@@ -72,4 +72,14 @@ if new_add not in t:
 
 if 'return _log.getCount(mod);' not in t:
     raise SystemExit('[FAIL] R10 local QSO counter was not preserved')
+
+# The upstream JTDX source carries three trailing spaces on these match lines.
+# Replacing only _log -> _workedLog would make git diff --check reject R10.
+for old, new in [
+    ('_workedLog.matchCqz(items[3], band, mode);   ', '_workedLog.matchCqz(items[3], band, mode);'),
+    ('_workedLog.matchItuz(items[4], band, mode);   ', '_workedLog.matchItuz(items[4], band, mode);'),
+    ('_workedLog.matchCountry(country, band, mode);   ', '_workedLog.matchCountry(country, band, mode);'),
+]:
+    t = t.replace(old, new)
+
 save(p, t)
