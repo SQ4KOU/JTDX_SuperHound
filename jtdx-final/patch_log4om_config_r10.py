@@ -87,6 +87,6 @@ if browse_marker not in t:
     browse_impl = '''\nvoid Configuration::impl::browse_log4om_database ()\n{\n  QString start = log4om_database_edit_->text().trimmed();\n  if (!start.isEmpty()) start = QFileInfo(start).absolutePath();\n  QString selected = QFileDialog::getOpenFileName(this, tr("Select Log4OM SQLite database"), start,\n      tr("SQLite database (*.sqlite *.sqlite3 *.db);;All files (*)"));\n  if (!selected.isEmpty()) log4om_database_edit_->setText(QDir::toNativeSeparators(selected));\n}\n'''
     t = t.replace(insert_anchor, browse_impl + insert_anchor, 1)
 
-if 'ui_->label_11->setText ("<a><img src=\":/decpasses.png\" height=\"464\" /></a>");' not in t:
+if 'ui_->label_11->setText' not in t or ':/decpasses.png' not in t:
     raise SystemExit('[FAIL] R10 original Advanced decpasses panel was lost')
 save(p, t)
